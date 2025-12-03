@@ -1,6 +1,7 @@
 // frontend/src/App.jsx
 import { useEffect, useState, useRef } from "react";
 import { startConversation, stopConversation, speak } from "./voice";
+import AdminPanel from "./adminpanel"; 
 
 function todayYMD() {
   const d = new Date();
@@ -11,6 +12,7 @@ function todayYMD() {
 }
 
 export default function App() {
+  // kept state from your previous file (contact UI preserved)
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -19,12 +21,18 @@ export default function App() {
   const [locale, setLocale] = useState("auto"); // "auto" | "en-IN" | "hi-IN"
   const convoRef = useRef(null);
 
-  // contact UI state
+  // contact UI state (unchanged)
   const [contactMode, setContactMode] = useState("none"); // none | email | phone | both
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
 
-  // slots modal state
+  // confirmation message shown to user after booking
+  const [confirmationText, setConfirmationText] = useState("");
+
+  // admin modal
+  const [showAdmin, setShowAdmin] = useState(false);
+
+  // slots modal state (unchanged)
   const [showSlotsModal, setShowSlotsModal] = useState(false);
   const [slotsDate, setSlotsDate] = useState(todayYMD());
   const [slotsData, setSlotsData] = useState(null);
@@ -48,7 +56,9 @@ export default function App() {
   }
 
   useEffect(() => {
-    loadBookings();
+    // keep loading function intact (for admin), but we won't show bookings in the user UI
+    // You can preload if you want:
+    // loadBookings();
   }, []);
 
   function appendMessage(text, who = "agent") {
@@ -60,7 +70,7 @@ export default function App() {
 
   // compute whether contact inputs satisfy the requirement to enable start
   function contactProvided() {
-    if (contactMode === "none") return false;
+    if (contactMode === "none") return true; // allow start; voice will ask for contact
     if (contactMode === "email") return email.trim().length > 3;
     if (contactMode === "phone") return phone.trim().length > 5;
     if (contactMode === "both") return email.trim().length > 3 && phone.trim().length > 5;
@@ -71,6 +81,7 @@ export default function App() {
   async function handleStartConversation() {
     setMessages([]);
     setListening(true);
+    setConfirmationText("");
 
     // compute effective locale
     let effLocale = locale;
@@ -83,8 +94,41 @@ export default function App() {
     const onUpdate = (text, who) => {
       const whoNorm = who === "user" ? "user" : "agent";
       appendMessage(text, whoNorm);
-      if (typeof text === "string" && (text.toLowerCase().includes("booking confirmed") || text.toLowerCase().includes("बुकिंग कन्फर्म"))) {
-        setTimeout(() => loadBookings(), 1200);
+
+      // detect booking confirmation phrases (English + Hindi)
+      if (typeof text === "string") {
+        const lower = text.toLowerCase();
+        const bookingConfirmed = lower.includes("booking confirmed") || lower.includes("your table is booked") ||
+                                 lower.includes("बुकिंग कन्फर्म") || lower.includes("बुकिंग कन्फर्म हो गई") ||
+                                 lower.includes("बुकिंग बनाई गई") || lower.includes("कन्फर्म हो गई");
+        if (bookingConfirmed) {
+          // decide localized confirmation and mention where it was sent (if contact provided)
+          let contactMsg = "";
+          if (contactMode === "email") {
+            contactMsg = effLocale === "hi-IN"
+              ? " हमने पुष्टिकरण आपके ईमेल पर भेज दिया है।"
+              : " We've sent confirmation to your email.";
+          } else if (contactMode === "phone") {
+            contactMsg = effLocale === "hi-IN"
+              ? " हमने पुष्टिकरण एक SMS के रूप में भेज दिया है।"
+              : " We've sent confirmation via SMS to your phone.";
+          } else if (contactMode === "both") {
+            contactMsg = effLocale === "hi-IN"
+              ? " हमने पुष्टिकरण आपके ईमेल और SMS दोनों पर भेज दिया है।"
+              : " We've sent confirmation to your email and phone.";
+          } else {
+            // contactMode === 'none' — don't assume, generic message
+            contactMsg = effLocale === "hi-IN"
+              ? ""
+              : "";
+          }
+
+          const base = effLocale === "hi-IN" ? "आपकी बुकिंग कन्फर्म हो गई।" : "Your booking is confirmed.";
+          setConfirmationText(base + contactMsg);
+
+          // refresh bookings after a short delay (admin can use loadBookings)
+          setTimeout(() => loadBookings(), 1200);
+        }
       }
     };
 
@@ -159,6 +203,17 @@ export default function App() {
     }
   }
 
+  // Admin gate (client-side prompt to open admin) — optional
+  function openAdminPanel() {
+    const pass = prompt("Enter admin code to open dashboard (client-side gate).");
+    if (pass === null) return;
+    if (pass.trim() === "admin123") {
+      setShowAdmin(true);
+    } else {
+      alert("Incorrect code.");
+    }
+  }
+
   return (
     <div style={{ padding: 20, fontFamily: "Inter, Arial, sans-serif", maxWidth: 900, margin: "0 auto" }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
@@ -189,8 +244,8 @@ export default function App() {
               background: listening ? "#ffecec" : "#fff",
               cursor: "pointer"
             }}
-            disabled={!contactProvided() && contactMode !== "none" } // if user selected a contact mode, require it; if "none" allow start (voice will ask)
-            title={contactMode !== "none" && !contactProvided() ? "Please enter phone/email for this contact mode" : ""}
+            disabled={!contactProvided()}
+            title={!contactProvided() ? "Please provide contact info for selected contact method" : ""}
           >
             {listening ? "Stop Conversation" : "Start Conversation"}
           </button>
@@ -211,6 +266,20 @@ export default function App() {
           </button>
 
           <button
+            onClick={() => openAdminPanel()}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid #ddd",
+              background: "#fff",
+              cursor: "pointer"
+            }}
+            title="Admin Dashboard (requires code)"
+          >
+            Admin Dashboard
+          </button>
+
+          <button
             onClick={() => {
               speak(locale === "hi-IN" ? "यह एक परीक्षण वाक्य है" : "This is a quick voice test. Speak after you press Start Conversation.");
             }}
@@ -227,7 +296,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Contact selector above conversation */}
+      {/* Contact selector above conversation (unchanged UI as requested) */}
       <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 12 }}>
         <label style={{ fontSize: 13, color: "#333", minWidth: 120 }}>Contact method (required)</label>
         <select
@@ -241,7 +310,7 @@ export default function App() {
           <option value="both">Both (Email & SMS)</option>
         </select>
 
-        {/* show inputs based on selection */}
+        {/* show inputs based on selection (unchanged) */}
         {(contactMode === "email" || contactMode === "both") && (
           <input
             placeholder="you@example.com"
@@ -312,115 +381,31 @@ export default function App() {
             </div>
           ))}
         </div>
-      </section>
 
-      <section style={{ marginTop: 18 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Bookings</h2>
-          <div>
-            <button
-              onClick={loadBookings}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 8,
-                border: "1px solid #ddd",
-                background: "#fff",
-                cursor: "pointer",
-                marginLeft: 8
-              }}
-            >
-              Refresh
-            </button>
-          </div>
-        </div>
-
-        <div style={{ marginTop: 8 }}>
-          {loading && <div>Loading bookings…</div>}
-          {error && <div style={{ color: "red" }}>Error loading bookings: {error}</div>}
-          {!loading && !error && bookings.length === 0 && <div style={{ color: "#666" }}>No bookings yet.</div>}
-
-          {!loading && bookings.length > 0 && (
-            <ul style={{ padding: 0, listStyle: "none", margin: 0 }}>
-              {bookings.map((b) => (
-                <li
-                  key={b.bookingId || b._id}
-                  style={{
-                    border: "1px solid #eee",
-                    padding: 12,
-                    borderRadius: 8,
-                    marginBottom: 8,
-                    display: "grid",
-                    gridTemplateColumns: "1fr auto",
-                    gap: 12,
-                    alignItems: "center"
-                  }}
-                >
-                  <div>
-                    <div style={{ fontWeight: 600 }}>
-                      {b.customerName} — {b.numberOfGuests} guests
-                    </div>
-
-                    <div style={{ color: "#666", fontSize: 13 }}>
-                      {new Date(b.bookingDate).toLocaleDateString()} @ {b.bookingTime} • {b.cuisinePreference || "—"}
-                    </div>
-
-                    <div style={{ marginTop: 6, fontSize: 13, color: "#444" }}>
-                      Seating:{" "}
-                      <strong>
-                        {b.seatingPreference ||
-                          (b.weatherInfo && b.weatherInfo.seatingRecommendation) ||
-                          "—"}
-                      </strong>
-                    </div>
-
-                    {b.weatherInfo && b.weatherInfo.weatherSummary && (
-                      <div style={{ marginTop: 6, fontSize: 13, color: "#666" }}>
-                        Weather: {b.weatherInfo.weatherSummary}
-                        {b.weatherInfo.note ? (
-                          <span style={{ marginLeft: 8, fontStyle: "italic" }}>({b.weatherInfo.note})</span>
-                        ) : null}
-                      </div>
-                    )}
-
-                    {b.specialRequests && (
-                      <div style={{ marginTop: 6, color: "#333" }}>
-                        Note: {b.specialRequests}
-                      </div>
-                    )}
-                  </div>
-
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 12, color: "#999" }}>
-                      {new Date(b.createdAt).toLocaleString()}
-                    </div>
-
-                    <div style={{ marginTop: 8 }}>
-                      <button
-                        onClick={async () => {
-                          if (!confirm("Delete booking?")) return;
-                          try {
-                            const resp = await fetch(`http://localhost:4000/api/bookings/${b.bookingId}`, { method: "DELETE" });
-                            if (!resp.ok) throw new Error("Delete failed");
-                            await loadBookings();
-                          } catch (err) {
-                            alert("Failed to delete booking: " + (err.message || err));
-                          }
-                        }}
-                        style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid #eee", cursor: "pointer" }}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
+        {/* confirmation message area under conversation (user view only) */}
+        <div style={{ marginTop: 12, minHeight: 36 }}>
+          {confirmationText ? (
+            <div style={{
+              padding: 10,
+              borderRadius: 8,
+              background: "#f0fff4",
+              border: "1px solid #e6f7ee",
+              color: "#065f46",
+              fontWeight: 600
+            }}>
+              {confirmationText}
+            </div>
+          ) : (
+            <div style={{ color: "#999" }}>
+              After confirming a booking the agent will show a short confirmation here.
+            </div>
           )}
         </div>
       </section>
 
+      {/* Bookings list removed from user UI (admin has separate dashboard). */}
       <footer style={{ marginTop: 24, color: "#888", fontSize: 13 }}>
-        Backend: <code>http://localhost:4000</code> — Bookings stored in MongoDB Atlas.
+        Backend: <code>http://localhost:4000</code>
       </footer>
 
       {/* Slots Modal */}
@@ -509,6 +494,13 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Admin Panel Modal (optional) */}
+      {showAdmin && (
+        <AdminPanel
+          onClose={() => setShowAdmin(false)}
+        />
       )}
 
       {/* Toast */}

@@ -1,7 +1,3 @@
-// frontend/src/voice.js
-// Full voice helper with locale support, TTS selection, Hindi handling,
-// NLP call, weather suggestion, and voice-driven slot fallback on conflicts.
-// Exports: startConversation(onUpdate, options), stopConversation(), speak(text)
 
 let running = false;
 let stopRequested = false;
