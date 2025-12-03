@@ -32,7 +32,8 @@ async function fetchWeatherForDate(date, lat, lon) {
     });
     const data = resp.data;
     // Expect data.seatingRecommendation and data.forecast (or forecast.current)
-    const seating = data.seatingRecommendation || data.seatingPreference || 'indoor';
+    // Default to 'indoor' if the provider does not give a recommendation
+    const seating = (data && (data.seatingRecommendation || data.seatingPreference)) ? (data.seatingRecommendation || data.seatingPreference) : 'indoor';
     return { weatherInfo: data, seatingPreference: seating };
   } catch (err) {
     console.warn('Failed to fetch weather for booking:', err?.response?.data || err.message || err);
@@ -50,7 +51,7 @@ router.get('/', async (req, res) => {
       const bookings = await Booking.find().sort({ createdAt: -1 });
       return res.json(bookings);
     } else {
-      // Return in-memory bookings
+      // Return in-memory bookings (reverse chronological)
       return res.json(inMemoryBookings.slice().reverse());
     }
   } catch (err) {
@@ -98,12 +99,24 @@ router.post('/', async (req, res) => {
       lon
     } = req.body;
 
+    // Log received payload for debugging
+    console.log('[BOOKINGS][RECEIVED PAYLOAD]', JSON.stringify(req.body));
+
+    // Basic validation
     if (!bookingId || !customerName || !numberOfGuests || !bookingDate || !bookingTime) {
       return res.status(400).json({ error: 'Missing required fields: bookingId, customerName, numberOfGuests, bookingDate, bookingTime' });
     }
 
     // Fetch weather (best-effort). Use provided lat/lon or default will be used by weather route.
-    const { weatherInfo, seatingPreference } = await fetchWeatherForDate(bookingDate, lat, lon);
+    const { weatherInfo, seatingPreference: weatherSeating } = await fetchWeatherForDate(bookingDate, lat, lon);
+
+    // Determine final seating preference: prefer explicit client choice; otherwise use weather's suggestion; else null.
+    let clientSeating = null;
+    if (req.body && req.body.seatingPreference && String(req.body.seatingPreference).trim() !== "") {
+      clientSeating = String(req.body.seatingPreference).trim().toLowerCase();
+    }
+
+    const finalSeatingPreference = clientSeating || (weatherSeating ? String(weatherSeating).trim().toLowerCase() : null);
 
     if (dbIsConnected()) {
       // Use MongoDB
@@ -119,10 +132,12 @@ router.post('/', async (req, res) => {
         cuisinePreference,
         specialRequests,
         weatherInfo,
-        seatingPreference
+        seatingPreference: finalSeatingPreference,
+        status: 'confirmed'
       });
 
       await booking.save();
+      // Return saved booking
       return res.status(201).json(booking);
     } else {
       // Use in-memory store
@@ -138,7 +153,7 @@ router.post('/', async (req, res) => {
         cuisinePreference,
         specialRequests,
         weatherInfo: weatherInfo || null,
-        seatingPreference: seatingPreference || 'unknown',
+        seatingPreference: finalSeatingPreference || 'unknown',
         status: 'confirmed',
         createdAt: new Date().toISOString()
       };

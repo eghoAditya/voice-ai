@@ -1,3 +1,4 @@
+// frontend/src/App.jsx
 import { useEffect, useState, useRef } from "react";
 import { startConversation, stopConversation, speak } from "./voice";
 
@@ -7,9 +8,10 @@ export default function App() {
   const [error, setError] = useState(null);
   const [messages, setMessages] = useState([]); // conversation messages
   const [listening, setListening] = useState(false);
+  const [locale, setLocale] = useState("auto"); // "auto" | "en-IN" | "hi-IN"
   const convoRef = useRef(null);
 
-  // fetch bookings from backend
+  // load bookings
   async function loadBookings() {
     setLoading(true);
     setError(null);
@@ -30,35 +32,49 @@ export default function App() {
     loadBookings();
   }, []);
 
-  // append message helper
+  // pretty display locale label
+  function localeLabel(l) {
+    if (!l || l === "auto") {
+      const nav = (navigator && navigator.language) || "en-IN";
+      return `Auto (${nav})`;
+    }
+    if (l === "en-IN") return "English (en-IN)";
+    if (l === "hi-IN") return "Hindi (hi-IN)";
+    return l;
+  }
+
   function appendMessage(text, who = "agent") {
     setMessages((m) => [...m, { id: Date.now() + Math.random(), who, text }]);
-    // scroll to bottom
     setTimeout(() => {
       if (convoRef.current) convoRef.current.scrollTop = convoRef.current.scrollHeight;
     }, 40);
   }
 
-  // called when user clicks Start Conversation
+  // start conversation with selected locale
   async function handleStartConversation() {
-    setMessages([]); // clear prior conversation
+    setMessages([]);
     setListening(true);
 
-    // onUpdate receives (text, who)
+    // compute effective locale
+    let effLocale = locale;
+    if (locale === "auto") {
+      effLocale = (navigator && navigator.language) || "en-IN";
+      // normalize e.g. "en-US" -> "en-IN" only if English; but keep full code to allow variety
+      if (effLocale.startsWith("en")) effLocale = "en-IN";
+      if (effLocale.startsWith("hi")) effLocale = "hi-IN";
+    }
+
     const onUpdate = (text, who) => {
-      // normalize
       const whoNorm = who === "user" ? "user" : "agent";
       appendMessage(text, whoNorm);
-
-      // If booking confirmed, refresh bookings (voice.js writes 'Booking confirmed' text)
       if (typeof text === "string" && text.toLowerCase().includes("booking confirmed")) {
-        // small delay to let backend finish saving
         setTimeout(() => loadBookings(), 1200);
       }
     };
 
     try {
-      await startConversation(onUpdate);
+      // pass locale option
+      await startConversation(onUpdate, { locale: effLocale });
     } catch (err) {
       console.error("startConversation error", err);
       appendMessage("Conversation error. Please try again.", "agent");
@@ -78,14 +94,24 @@ export default function App() {
     <div style={{ padding: 20, fontFamily: "Inter, Arial, sans-serif", maxWidth: 900, margin: "0 auto" }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
         <h1 style={{ margin: 0, fontSize: 22 }}>Voice AI Restaurant Booking</h1>
-        <div style={{ display: "flex", gap: 8 }}>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <label style={{ fontSize: 13, color: "#333" }}>Language</label>
+          <select
+            value={locale}
+            onChange={(e) => setLocale(e.target.value)}
+            style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid #ddd" }}
+            aria-label="Choose language"
+          >
+            <option value="auto">Auto ({(navigator && navigator.language) || "en-IN"})</option>
+            <option value="en-IN">English (en-IN)</option>
+            <option value="hi-IN">Hindi (hi-IN)</option>
+          </select>
+
           <button
             onClick={() => {
-              if (listening) {
-                handleStopConversation();
-              } else {
-                handleStartConversation();
-              }
+              if (listening) handleStopConversation();
+              else handleStartConversation();
             }}
             style={{
               padding: "8px 12px",
@@ -97,10 +123,10 @@ export default function App() {
           >
             {listening ? "Stop Conversation" : "Start Conversation"}
           </button>
+
           <button
             onClick={() => {
-              // quick speak demo
-              speak("This is a quick voice test. Speak after you press Start Conversation.");
+              speak(locale === "hi-IN" ? "यह एक परीक्षण वाक्य है" : "This is a quick voice test. Speak after you press Start Conversation.");
             }}
             style={{
               padding: "8px 12px",
