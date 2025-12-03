@@ -1,20 +1,19 @@
 // frontend/src/voice.js
-// Voice helper integrated with Groq NLP and supports a locale option.
-// Fixed: ensures TTS utterance language (ut.lang) is set to the active locale so Hindi is spoken properly.
+// Full voice helper with locale support, TTS selection, Hindi handling,
+// NLP call, weather suggestion, and voice-driven slot fallback on conflicts.
+// Exports: startConversation(onUpdate, options), stopConversation(), speak(text)
 
 let running = false;
 let stopRequested = false;
-let ttsLang = 'en-IN'; // module-level TTS language; updated by startConversation
+let ttsLang = 'en-IN'; // updated by startConversation
 
-// ---------- TTS ----------
+// ---------- TTS utils ----------
 function chooseBestVoice(preferredLang) {
   const voices = window.speechSynthesis.getVoices() || [];
   if (!voices.length) return null;
 
-  // Build ordered language priority: prefer exact lang then fallbacks
   const langPriority = [];
   if (preferredLang) {
-    // e.g., 'hi-IN' -> prefer hi-IN, then hi, then en-IN, en
     const p = preferredLang.toLowerCase();
     langPriority.push(new RegExp('^' + p.replace('-', '.?')));
     const short = p.split('-')[0];
@@ -67,11 +66,7 @@ export function speak(text) {
 
         // Set utterance language explicitly to the active TTS language
         if (ttsLang) {
-          try {
-            ut.lang = ttsLang;
-          } catch (e) {
-            // ignore if browser rejects
-          }
+          try { ut.lang = ttsLang; } catch (e) { /* ignore */ }
         }
 
         const best = chooseBestVoice(ttsLang);
@@ -140,92 +135,178 @@ const SMALL_NUM = {
 };
 
 function parseNumberText(text) {
-    if (!text) return null;
-    const orig = String(text).trim();
-  
-    // 1) Quick numeric digits (Latin or Devanagari)
-    // Replace Devanagari digits with Latin equivalents
-    const devanagariDigits = { '०':'0','१':'1','२':'2','३':'3','४':'4','५':'5','६':'6','७':'7','८':'8','९':'9' };
-    let normalized = orig.replace(/[\u0966-\u096F]/g, (d) => devanagariDigits[d] || d);
-  
-    const digitsMatch = normalized.match(/\d+/);
-    if (digitsMatch) return parseInt(digitsMatch[0], 10);
-  
-    // 2) Word-based numbers: support English and Hindi words
-    const engSmall = {
-      zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10,
-      eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19,
-      twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90, hundred:100
-    };
-  
-    const hinSmall = {
-      'शून्य':0,'शुन्य':0,'एक':1,'दो':2,'दोण':2,'तीन':3,'चार':4,'पांच':5,'छह':6,'सात':7,'आठ':8,'नौ':9,'दस':10,
-      'ग्यारह':11,'बारह':12,'तेरह':13,'चौदह':14,'पंद्रह':15,'पंद्रह':15,'सोलह':16,'सत्रह':17,' अठारह':18,'अठारह':18,'उन्नीस':19,
-      'बीस':20,'तीस':30,'चालीस':40,'पचास':50,'साठ':60,'सत्तर':70,'अस्सी':80,'नब्बे':90,'सौ':100
-    };
-  
-    // lower-case and normalize punctuation
-    const t = normalized.toLowerCase().replace(/[,\;]/g,' ').replace(/[^0-9a-z\u0900-\u097F\s\-]/g,' ').trim();
-    const parts = t.split(/\s+/).filter(Boolean);
-  
-    // try English words first
-    let total = 0;
-    let seen = false;
-    for (let i=0;i<parts.length;i++){
-      const w = parts[i];
-      if (engSmall[w] !== undefined) {
-        // handle twenty two pattern
-        if (engSmall[w] >= 20 && i+1 < parts.length && engSmall[parts[i+1]] !== undefined && engSmall[parts[i+1]] < 10) {
-          total += engSmall[w] + engSmall[parts[i+1]];
-          seen = true;
-          break;
-        } else {
-          total += engSmall[w];
-          seen = true;
-        }
+  if (!text) return null;
+  const orig = String(text).trim();
+
+  // Replace Devanagari digits
+  const devanagariDigits = { '०':'0','१':'1','२':'2','३':'3','४':'4','५':'5','६':'6','७':'7','८':'8','९':'9' };
+  let normalized = orig.replace(/[\u0966-\u096F]/g, (d) => devanagariDigits[d] || d);
+
+  const digitsMatch = normalized.match(/\d+/);
+  if (digitsMatch) return parseInt(digitsMatch[0], 10);
+
+  const engSmall = {
+    zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10,
+    eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19,
+    twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90, hundred:100
+  };
+
+  const hinSmall = {
+    'शून्य':0,'शुन्य':0,'एक':1,'दो':2,'दोण':2,'तीन':3,'चार':4,'पांच':5,'छह':6,'सात':7,'आठ':8,'नौ':9,'दस':10,
+    'ग्यारह':11,'बारह':12,'तेरह':13,'चौदह':14,'पंद्रह':15,'सोलह':16,'सत्रह':17,'अठारह':18,'उन्नीस':19,
+    'बीस':20,'तीस':30,'चालीस':40,'पचास':50,'साठ':60,'सत्तर':70,'अस्सी':80,'नब्बे':90,'सौ':100
+  };
+
+  const t = normalized.toLowerCase().replace(/[,\;]/g,' ').replace(/[^0-9a-z\u0900-\u097F\s\-]/g,' ').trim();
+  const parts = t.split(/\s+/).filter(Boolean);
+
+  let total = 0; let seen = false;
+  for (let i=0;i<parts.length;i++){
+    const w = parts[i];
+    if (engSmall[w] !== undefined) {
+      if (engSmall[w] >= 20 && i+1 < parts.length && engSmall[parts[i+1]] !== undefined && engSmall[parts[i+1]] < 10) {
+        total += engSmall[w] + engSmall[parts[i+1]];
+        seen = true;
+        break;
+      } else {
+        total += engSmall[w];
+        seen = true;
       }
     }
-    if (seen) return total || 1;
-  
-    // try Hindi words
-    total = 0; seen = false;
-    for (let i=0;i<parts.length;i++){
-      const w = parts[i];
-      if (hinSmall[w] !== undefined) {
-        if (hinSmall[w] >= 20 && i+1 < parts.length && hinSmall[parts[i+1]] !== undefined && hinSmall[parts[i+1]] < 10) {
-          total += hinSmall[w] + hinSmall[parts[i+1]];
-          seen = true;
-          break;
-        } else {
-          total += hinSmall[w];
-          seen = true;
-        }
-      }
-    }
-    if (seen) return total || 1;
-  
-    // fallback: look for any single small-number word
-    for (const p of parts) {
-      if (engSmall[p] !== undefined) return engSmall[p];
-      if (hinSmall[p] !== undefined) return hinSmall[p];
-    }
-  
-    return null;
   }
-  
-function parseDateText(text) {
-  const t = (text || "").toLowerCase().trim();
-  if (!t) return null;
-  if (t.includes("today")) return new Date();
-  if (t.includes("tomorrow")) { const d = new Date(); d.setDate(d.getDate()+1); return d; }
-  const parsed = Date.parse(t);
-  if (!isNaN(parsed)) return new Date(parsed);
+  if (seen) return total || 1;
+
+  total = 0; seen = false;
+  for (let i=0;i<parts.length;i++){
+    const w = parts[i];
+    if (hinSmall[w] !== undefined) {
+      if (hinSmall[w] >= 20 && i+1 < parts.length && hinSmall[parts[i+1]] !== undefined && hinSmall[parts[i+1]] < 10) {
+        total += hinSmall[w] + hinSmall[parts[i+1]];
+        seen = true;
+        break;
+      } else {
+        total += hinSmall[w];
+        seen = true;
+      }
+    }
+  }
+  if (seen) return total || 1;
+
+  for (const p of parts) {
+    if (engSmall[p] !== undefined) return engSmall[p];
+    if (hinSmall[p] !== undefined) return hinSmall[p];
+  }
+
   return null;
 }
+
+// Enhanced parseDateText (supports common English/Hindi forms)
+function parseDateText(text) {
+  if (!text) return null;
+  const raw = String(text).trim();
+  const t0 = raw.toLowerCase();
+  if (!t0) return null;
+  if (t0.includes("today") || t0.includes("आज")) return new Date();
+  if (t0.includes("tomorrow") || t0.includes("कल")) {
+    const d = new Date(); d.setDate(d.getDate() + 1); return d;
+  }
+
+  let normalized = raw.replace(/(\d+)(st|nd|rd|th)/gi, "$1");
+  normalized = normalized.replace(/[,]/g, " ");
+
+  const months = {
+    january:0, february:1, march:2, april:3, may:4, june:5,
+    july:6, august:7, september:8, october:9, november:10, december:11,
+    jan:0, feb:1, mar:2, apr:3, jun:5, jul:6, aug:7, sep:8, sept:8, oct:9, nov:10, dec:11
+  };
+  const hindiMonths = {
+    'जनवरी':0,'फरवरी':1,'मार्च':2,'अप्रैल':3,'मई':4,'जून':5,'जुलाई':6,'अगस्त':7,'सितंबर':8,'अक्टूबर':9,'नवंबर':10,'दिसंबर':11,
+    'जन':0,'फर':1,'मार्च':2,'अप्रै':3,'जून':5,'जुल':6,'अग':7,'सित':8,'अक्ट':9,'नव':10,'दिस':11
+  };
+
+  const numericIso = normalized.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (numericIso) {
+    const year = parseInt(numericIso[1], 10);
+    const month = parseInt(numericIso[2], 10) - 1;
+    const day = parseInt(numericIso[3], 10);
+    const d = new Date(year, month, day);
+    if (!isNaN(d)) return d;
+  }
+  const numericDMY = normalized.match(/(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
+  if (numericDMY) {
+    const day = parseInt(numericDMY[1], 10);
+    const month = parseInt(numericDMY[2], 10) - 1;
+    const year = parseInt(numericDMY[3], 10);
+    const d = new Date(year, month, day);
+    if (!isNaN(d)) return d;
+  }
+  const numericDM = normalized.match(/(\d{1,2})[-\/](\d{1,2})$/);
+  if (numericDM) {
+    const day = parseInt(numericDM[1], 10);
+    const month = parseInt(numericDM[2], 10) - 1;
+    const year = new Date().getFullYear();
+    const d = new Date(year, month, day);
+    if (!isNaN(d)) return d;
+  }
+
+  const parts = normalized.split(/\s+/).filter(Boolean);
+  function findMonthIndex(parts) {
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i].toLowerCase();
+      if (months[p] !== undefined) return { idx: i, month: months[p] };
+      if (hindiMonths[p] !== undefined) return { idx: i, month: hindiMonths[p] };
+      for (const m of Object.keys(months)) if (p.includes(m)) return { idx: i, month: months[m] };
+      for (const hm of Object.keys(hindiMonths)) if (p.includes(hm)) return { idx: i, month: hindiMonths[hm] };
+    }
+    return null;
+  }
+
+  const found = findMonthIndex(parts);
+  if (found) {
+    const { idx, month } = found;
+    let day = null, year = null;
+    if (idx > 0) {
+      const left = parts[idx - 1].replace(/[^\d]/g, "");
+      if (left && /^[0-9]{1,2}$/.test(left)) day = parseInt(left, 10);
+    }
+    if (idx < parts.length - 1) {
+      const right = parts[idx + 1].replace(/[^\d]/g, "");
+      if (right && /^[0-9]{1,2}$/.test(right) && !day) day = parseInt(right, 10);
+      if (right && /^[0-9]{4}$/.test(right)) year = parseInt(right, 10);
+    }
+    for (const p of parts) {
+      const y = p.match(/(20\d{2})/);
+      if (y) { year = parseInt(y[1], 10); break; }
+    }
+    if (!day) day = 1;
+    if (!year) year = new Date().getFullYear();
+    const d = new Date(year, month, day);
+    if (!isNaN(d)) return d;
+  }
+
+  const singleDay = normalized.match(/(?:on\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?(?:\s|$)/i);
+  if (singleDay) {
+    const day = parseInt(singleDay[1], 10);
+    const now = new Date();
+    const cand = new Date(now.getFullYear(), now.getMonth(), day);
+    if (cand < now) {
+      const next = new Date(now.getFullYear(), now.getMonth() + 1, day);
+      return next;
+    }
+    return cand;
+  }
+
+  const parsed = Date.parse(normalized);
+  if (!isNaN(parsed)) return new Date(parsed);
+
+  return null;
+}
+
 function formatDateYMD(d) {
   const y = d.getFullYear(); const m = String(d.getMonth()+1).padStart(2,'0'); const day = String(d.getDate()).padStart(2,'0');
   return `${y}-${m}-${day}`;
 }
+
 function parseTimeText(text) {
   const t = (text || "").toLowerCase().replace("o'clock","").trim();
   const hhmm = t.match(/(\d{1,2})[:. ](\d{2})/);
@@ -246,6 +327,7 @@ function parseTimeText(text) {
   }
   return null;
 }
+
 function genBookingId(){ const ts = Date.now(); const rand = Math.floor(Math.random()*9000)+1000; return `bk-${ts}-${rand}`; }
 
 export function stopConversation() { stopRequested = true; running = false; try { window.speechSynthesis.cancel(); } catch(e) {} }
@@ -265,7 +347,7 @@ async function callNLP(text, locale = 'en-IN') {
     }
     const j = await resp.json();
     if (j && j.success && j.intent) return j.intent;
-    if (j && j.intent && j.intent.rawText) return j.intent; // fallback
+    if (j && j.intent) return j.intent;
     return null;
   } catch (err) {
     console.warn('NLP call error', err);
@@ -273,7 +355,7 @@ async function callNLP(text, locale = 'en-IN') {
   }
 }
 
-// ---------- Weather ----------
+// ---------- Weather helper ----------
 async function fetchWeatherSuggestion(dateYMD, lat='12.9716', lon='77.5946') {
   try {
     const url = `http://localhost:4000/api/weather?date=${encodeURIComponent(dateYMD)}&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`;
@@ -286,27 +368,81 @@ async function fetchWeatherSuggestion(dateYMD, lat='12.9716', lon='77.5946') {
   }
 }
 
+// ---------- Affirmative / Negative detection ----------
 function isAffirmative(text) {
-    if (!text) return false;
-    const t = String(text).toLowerCase().trim();
-  
-    // normalize common Hindi affirmative variants (with/without nukta/diacritics)
-    const norm = t.replace(/हाँ/g, 'haan').replace(/हां/g, 'haan').replace(/हूँ/g,'hun');
-  
-    const yesWords = ["yes","yeah","yep","sure","ok","okay","confirm","affirmative","please do","do it","i do","i'd like","haan","haan ji","हाँ","हां","ठीक","ठीक है","बिलकुल"];
-    for (const w of yesWords) if (norm.includes(w) || t.includes(w)) return true;
-  
-    // also quick regex for single-letter yes like 'y' (in latin)
-    if (/^\s*y[ae]s?\b/.test(t)) return true;
-    return false;
+  if (!text) return false;
+  const t = String(text).toLowerCase().trim();
+  const norm = t.replace(/हाँ/g, 'haan').replace(/हां/g, 'haan').replace(/हूँ/g,'hun');
+  const yesWords = ["yes","yeah","yep","sure","ok","okay","confirm","affirmative","please do","do it","i do","i'd like","haan","haan ji","हाँ","हां","ठीक","ठीक है","बिलकुल","हां","हॅं"];
+  for (const w of yesWords) if (norm.includes(w) || t.includes(w)) return true;
+  if (/^\s*y[ae]s?\b/.test(t)) return true;
+  return false;
+}
+
+// ---------- Slots API helper (used when conflict occurs) ----------
+async function fetchSlotsForDateAPI(date) {
+  try {
+    const r = await fetch(`http://localhost:4000/api/bookings/slots?date=${encodeURIComponent(date)}`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) {
+    console.error("Failed to fetch slots", e);
+    return null;
   }
-  
-// ---------- Main conversation flow with locale support ----------
-// startConversation(onUpdate, { locale: 'en-IN' | 'hi-IN' | ... })
+}
+
+async function askUserToPickSlot(offeredSlots, userLocale) {
+  if (!offeredSlots || offeredSlots.length === 0) return null;
+
+  // Build spoken list (human-friendly)
+  const humanSlots = offeredSlots.map(s => {
+    const [hh, mm] = s.split(':').map(Number);
+    if ((userLocale || '').startsWith('hi')) {
+      // keep 24-hour in Hindi (recognizer will handle)
+      return s;
+    } else {
+      const h12 = (hh % 12) === 0 ? 12 : hh % 12;
+      const ampm = hh >= 12 ? "PM" : "AM";
+      return `${h12}:${String(mm).padStart(2,'0')} ${ampm}`;
+    }
+  });
+
+  const speakText = (userLocale || '').startsWith('hi')
+    ? `मैं ${offeredSlots.join(', ')} में से उपलब्ध कर सकता हूँ। कौन सा समय चाहेंगे?`
+    : `I can do ${humanSlots.join(', ').replace(/, ([^,]*)$/, ' or $1')}. Which one would you like?`;
+
+  // Ask
+  await speak(speakText);
+  const pickResp = await listenOnce({ lang: userLocale });
+  if (!pickResp) return null;
+
+  // Try time parse
+  const parsed = parseTimeText(pickResp);
+  if (parsed) {
+    const norm = parsed.slice(0,5);
+    if (offeredSlots.includes(norm)) return norm;
+    const hourOnly = norm.split(":")[0];
+    const foundByHour = offeredSlots.find(s => s.split(":")[0] === hourOnly);
+    if (foundByHour) return foundByHour;
+  }
+
+  const lower = (pickResp || "").toLowerCase();
+  if (lower.match(/\b(first|1st|one|पहला|पहले)\b/)) return offeredSlots[0] || null;
+  if (lower.match(/\b(second|2nd|two|दूसरा|दूसरे)\b/)) return offeredSlots[1] || null;
+  if (lower.match(/\b(third|3rd|three|तीसरा|तीसरे)\b/)) return offeredSlots[2] || null;
+
+  for (const s of offeredSlots) {
+    if (pickResp.includes(s) || pickResp.includes(s.replace(':', ''))) return s;
+    const hour = String(Number(s.split(':')[0]) % 12);
+    if (pickResp.includes(hour)) return s;
+  }
+
+  return null;
+}
+
+// ---------- Main conversation flow ----------
 export async function startConversation(onUpdate, options = {}) {
   const userLocale = (options && options.locale) ? options.locale : 'en-IN';
-
-  // set the TTS language for the whole session
   ttsLang = userLocale;
 
   if (!("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
@@ -342,77 +478,67 @@ export async function startConversation(onUpdate, options = {}) {
 
       if (answers[q.key] && answers[q.key].length > 0) continue;
 
-      // weather suggestion before bookingTime (same logic as before)
-      // ---------- Seating suggestion (replace existing bookingTime block) ----------
-// ---------- Seating suggestion (replace the existing bookingTime block) ----------
-if (q.key === 'bookingTime') {
-    const rawDateText = answers.bookingDate || "";
-    const parsedDate = parseDateText(rawDateText) || new Date();
-    const dateYMD = formatDateYMD(parsedDate);
-  
-    onUpdate && onUpdate(`Checking weather for ${dateYMD}…`, "agent");
-    const weatherResp = await fetchWeatherSuggestion(dateYMD);
-    let suggestionText = "";
-    let rec = ''; // lowercased suggested seating from weather
-  
-    if (weatherResp.ok && weatherResp.data) {
-      const w = weatherResp.data;
-      rec = (w.seatingRecommendation || w.seatingPreference || '').toLowerCase();
-      const summary = w.weatherSummary || "";
-      if (rec === 'outdoor') {
-        suggestionText = `The weather looks great on ${dateYMD}! Would you prefer outdoor seating?`;
-      } else if (rec === 'indoor') {
-        suggestionText = `It might rain on ${dateYMD}. I'd recommend our cozy indoor area. Would you like that?`;
-      } else {
-        suggestionText = `I checked the weather for ${dateYMD}: ${summary || 'forecast not available'}. Would you prefer outdoor seating?`;
-        rec = 'outdoor';
-      }
-    } else {
-      suggestionText = `I couldn't fetch the forecast for ${dateYMD}. Would you prefer indoor seating by default?`;
-      rec = 'indoor';
-    }
-  
-    // Ask and listen robustly
-    onUpdate && onUpdate(suggestionText, "agent");
-    await speak(suggestionText);
-    const prefResp = (typeof listenWithFallback === 'function') ? await listenWithFallback(userLocale) : await listenOnce({ lang: userLocale });
-    onUpdate && onUpdate(prefResp || "", "user");
-  
-    // helper to detect negative replies
-    function isNegative(text) {
-      if (!text) return false;
-      const t = String(text).toLowerCase();
-      const noWords = ["no","nah","nope","dont","don't","cancel","not","n","नहीं","ना","नही","न","नो"];
-      for (const w of noWords) if (t.includes(w)) return true;
-      return false;
-    }
-  
-    const affirmative = isAffirmative(prefResp);
-    const negative = isNegative(prefResp);
-  
-    if (affirmative && !negative) {
-      seatingPreferenceFromUser = (rec === 'outdoor') ? 'outdoor' : (rec === 'indoor' ? 'indoor' : rec || 'outdoor');
-    } else if (negative && !affirmative) {
-      seatingPreferenceFromUser = (rec === 'outdoor') ? 'indoor' : (rec === 'indoor' ? 'outdoor' : 'indoor');
-    } else {
-      // ambiguous/no answer — do not force; leave null so backend may apply default weather logic
-      seatingPreferenceFromUser = null;
-    }
-  
-    // Persist and show for debugging/visibility
-    if (seatingPreferenceFromUser) {
-      answers.seatingPreference = seatingPreferenceFromUser;
-      onUpdate && onUpdate(`(seating preference set to ${seatingPreferenceFromUser})`, "agent");
-      try { console.debug("[SEATING] user choice:", seatingPreferenceFromUser, "prefResp:", prefResp, "weatherRec:", rec); } catch(e) {}
-    } else {
-      onUpdate && onUpdate(`(seating preference: user did not choose explicitly)`, "agent");
-      try { console.debug("[SEATING] user ambiguous; prefResp:", prefResp, "weatherRec:", rec); } catch(e) {}
-    }
-  }
-  
-  
+      // Before bookingTime: check weather and ask seating preference
+      if (q.key === 'bookingTime') {
+        const rawDateText = answers.bookingDate || "";
+        const parsedDate = parseDateText(rawDateText) || new Date();
+        const dateYMD = formatDateYMD(parsedDate);
 
-      // Ask prompt, then listen (and possibly call NLP)
+        onUpdate && onUpdate(`Checking weather for ${dateYMD}…`, "agent");
+        const weatherResp = await fetchWeatherSuggestion(dateYMD);
+        let suggestionText = "";
+        let rec = '';
+
+        if (weatherResp.ok && weatherResp.data) {
+          const w = weatherResp.data;
+          rec = (w.seatingRecommendation || w.seatingPreference || '').toLowerCase();
+          const summary = w.weatherSummary || "";
+          if (rec === 'outdoor') {
+            suggestionText = userLocale.startsWith('hi') ? `उस तारीख ${dateYMD} का मौसम अच्छा है! क्या आप outdoor seating चुनना चाहेंगे?` : `The weather looks great on ${dateYMD}! Would you prefer outdoor seating?`;
+          } else if (rec === 'indoor') {
+            suggestionText = userLocale.startsWith('hi') ? `संभावना है कि बारिश होगी ${dateYMD}। मैं इनडोर सीटिंग की सलाह दूँगा। क्या आप चाहेंगे?` : `It might rain on ${dateYMD}. I'd recommend our cozy indoor area. Would you like that?`;
+          } else {
+            suggestionText = userLocale.startsWith('hi') ? `मैंने ${dateYMD} का मौसम देखा: ${summary || 'पूर्वानुमान उपलब्ध नहीं'}. क्या आप outdoor seating चाहेंगे?` : `I checked the weather for ${dateYMD}: ${summary || 'forecast not available'}. Would you prefer outdoor seating?`;
+            rec = 'outdoor';
+          }
+        } else {
+          suggestionText = userLocale.startsWith('hi') ? `मैं ${dateYMD} के लिए पूर्वानुमान नहीं ला पाया। क्या आप डिफ़ॉल्ट रूप से इनडोर चाहेंगे?` : `I couldn't fetch the forecast for ${dateYMD}. Would you prefer indoor seating by default?`;
+          rec = 'indoor';
+        }
+
+        onUpdate && onUpdate(suggestionText, "agent");
+        await speak(suggestionText);
+        const prefResp = await listenOnce({ lang: userLocale });
+        onUpdate && onUpdate(prefResp || "", "user");
+
+        function isNegative(text) {
+          if (!text) return false;
+          const t = String(text).toLowerCase();
+          const noWords = ["no","nah","nope","dont","don't","cancel","not","n","नहीं","ना","नही","न","नो"];
+          for (const w of noWords) if (t.includes(w)) return true;
+          return false;
+        }
+
+        const affirmative = isAffirmative(prefResp);
+        const negative = isNegative(prefResp);
+
+        if (affirmative && !negative) {
+          seatingPreferenceFromUser = (rec === 'outdoor') ? 'outdoor' : (rec === 'indoor' ? 'indoor' : rec || 'outdoor');
+        } else if (negative && !affirmative) {
+          seatingPreferenceFromUser = (rec === 'outdoor') ? 'indoor' : (rec === 'indoor' ? 'outdoor' : 'indoor');
+        } else {
+          seatingPreferenceFromUser = null; // ambiguous -> backend decides
+        }
+
+        if (seatingPreferenceFromUser) {
+          answers.seatingPreference = seatingPreferenceFromUser;
+          onUpdate && onUpdate(`(seating preference set to ${seatingPreferenceFromUser})`, "agent");
+        } else {
+          onUpdate && onUpdate(`(seating preference: user did not choose explicitly)`, "agent");
+        }
+      }
+
+      // Ask the main prompt and listen
       onUpdate && onUpdate(q.prompt, "agent");
       await speak(q.prompt);
       let transcript = await listenOnce({ lang: userLocale });
@@ -462,7 +588,7 @@ if (q.key === 'bookingTime') {
       return;
     }
 
-    // normalize and payload
+    // Normalize and build payload
     const parsedDate = parseDateText(answers.bookingDate || "") || new Date();
     const bookingDateYMD = formatDateYMD(parsedDate);
     const parsedTime = parseTimeText(answers.bookingTime || "") || "19:00";
@@ -476,23 +602,25 @@ if (q.key === 'bookingTime') {
     if (special.toLowerCase().trim() === 'no' || special.toLowerCase().trim() === 'nahi') special = "";
 
     const payload = {
-        bookingId: genBookingId(),
-        customerName: answers.customerName || "Guest",
-        numberOfGuests: noGuests,
-        bookingDate: bookingDateYMD,
-        bookingTime: parsedTime,
-        cuisinePreference: answers.cuisinePreference || "",
-        specialRequests: special,
-        lat: "12.9716",
-        lon: "77.5946"
-      };
-      
-      // prefer explicit user selection, fallback to answers store
-      const chosenSeating = seatingPreferenceFromUser || answers.seatingPreference || null;
-      if (chosenSeating) payload.seatingPreference = chosenSeating;
-      
+      bookingId: genBookingId(),
+      customerName: answers.customerName || "Guest",
+      numberOfGuests: noGuests,
+      bookingDate: bookingDateYMD,
+      bookingTime: parsedTime,
+      cuisinePreference: answers.cuisinePreference || "",
+      specialRequests: special,
+      lat: "12.9716",
+      lon: "77.5946"
+    };
 
-    // final confirm (localized)
+    // include locale so backend can return localized messages
+    payload.locale = userLocale;
+
+    // prefer explicit user selection (seatingPreferenceFromUser), else interpreter/answers
+    const chosenSeating = seatingPreferenceFromUser || answers.seatingPreference || null;
+    if (chosenSeating) payload.seatingPreference = chosenSeating;
+
+    // Confirm (localized)
     const confirmText = userLocale.startsWith('hi')
       ? `कन्फर्म कर रहा हूँ: ${payload.customerName}, ${payload.numberOfGuests} मेहमान, ${payload.bookingDate} को ${payload.bookingTime}। क्या मैं बुक कर दूँ? हाँ कहकर कन्फर्म करें।`
       : `Confirming: ${payload.customerName}, ${payload.numberOfGuests} guests, on ${payload.bookingDate} at ${payload.bookingTime}. Shall I book this? Say yes to confirm.`;
@@ -502,10 +630,8 @@ if (q.key === 'bookingTime') {
 
     const confirmResp = await speakThenListen(userLocale && userLocale.startsWith('hi') ? "कृपया हाँ कहें या नहीं कहें।" : "Please say yes to confirm or no to cancel.", userLocale);
     onUpdate && onUpdate(confirmResp || "", "user");
-    
-    // use same robust affirmative detection we already use elsewhere
+
     const confirmedFlag = isAffirmative(confirmResp);
-    
 
     if (!confirmedFlag) {
       const msg = userLocale.startsWith('hi') ? "ठीक है, बुकिंग रद्द कर दी गई।" : "Okay, booking cancelled.";
@@ -518,30 +644,125 @@ if (q.key === 'bookingTime') {
     onUpdate && onUpdate(userLocale.startsWith('hi') ? "आपकी बुकिंग सेव की जा रही है…" : "Saving your booking…", "agent");
     await speak(userLocale.startsWith('hi') ? "अब आपकी बुकिंग सेव कर रहा हूँ।" : "Saving your booking now.");
 
+    // --- Save booking with voice-driven slot fallback on 409 ---
+    let resp, saved;
     try {
-      const resp = await fetch("http://localhost:4000/api/bookings", {
+      resp = await fetch("http://localhost:4000/api/bookings", {
         method: "POST",
-        headers: { "Content-Type":"application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      const saved = await resp.json();
-      if (!resp.ok) {
-        const errMsg = saved && saved.error ? saved.error : "Failed to save booking";
-        onUpdate && onUpdate(`Error: ${errMsg}`, "agent");
-        await speak(userLocale.startsWith('hi') ? `मैं आपकी बुकिंग सेव नहीं कर पाया: ${errMsg}` : `I couldn't save your booking. ${errMsg}`);
-      } else {
-        const doneMsg = userLocale.startsWith('hi')
-          ? `बुकिंग कन्फर्म हो गई। ${payload.customerName}, आपकी टेबल ${payload.bookingDate} को ${payload.bookingTime} पर बुक हो गई है।`
-          : `Booking confirmed. ${payload.customerName}, your table is booked for ${payload.bookingDate} at ${payload.bookingTime}. Seating preferred: ${saved.seatingPreference || (saved.weatherInfo && saved.weatherInfo.seatingRecommendation) || "not available"}.`;
-        onUpdate && onUpdate(doneMsg, "agent");
-        await speak(doneMsg);
-      }
+      saved = await resp.json();
     } catch (err) {
       console.error("Failed to post booking", err);
       onUpdate && onUpdate(userLocale.startsWith('hi') ? "नेटवर्क त्रुटि जबकि बुकिंग सेव हो रही थी।" : "Network error while saving booking.", "agent");
       await speak(userLocale.startsWith('hi') ? "नेटवर्क त्रुटि हुई।" : "Network error while saving booking.");
+      running = false;
+      return;
     }
 
+    if (resp.ok) {
+      const doneMsg = userLocale.startsWith('hi')
+        ? `बुकिंग कन्फर्म हो गई। ${payload.customerName}, आपकी टेबल ${payload.bookingDate} को ${payload.bookingTime} पर बुक हो गई है।`
+        : `Booking confirmed. ${payload.customerName}, your table is booked for ${payload.bookingDate} at ${payload.bookingTime}. Seating preferred: ${saved.seatingPreference || (saved.weatherInfo && saved.weatherInfo.seatingRecommendation) || "not available"}.`;
+      onUpdate && onUpdate(doneMsg, "agent");
+      await speak(doneMsg);
+      running = false;
+      return;
+    }
+
+    // Handle 409 conflict: offer voice alternatives
+    if (resp.status === 409) {
+      try {
+        const slotsData = await fetchSlotsForDateAPI(payload.bookingDate);
+        if (slotsData && slotsData.available && slotsData.available.length > 0) {
+          const alternatives = slotsData.available.filter(s => s !== payload.bookingTime).slice(0, 3);
+          if (alternatives.length === 0) {
+            const msg = userLocale.startsWith('hi')
+              ? `माफ़ कीजिए, उस तारीख पर कोई वैकल्पिक स्लॉट उपलब्ध नहीं है।`
+              : `Sorry, no alternative slots available on that date. Please try another date or use the slot picker.`;
+            onUpdate && onUpdate(msg, "agent");
+            await speak(msg);
+            running = false;
+            return;
+          }
+
+          const offerText = userLocale.startsWith('hi')
+            ? `माँगा हुआ समय उपलब्ध नहीं है। मैं ये समय दे सकता हूँ: ${alternatives.join(', ')}. कौन सा चाहेंगे?`
+            : `The requested time is unavailable. I can offer: ${alternatives.join(', ')}. Which one would you like?`;
+
+          onUpdate && onUpdate(offerText, "agent");
+          await speak(offerText);
+
+          const chosen = await askUserToPickSlot(alternatives, userLocale);
+          if (!chosen) {
+            const fallbackMsg = userLocale.startsWith('hi')
+              ? `मैं वैध विकल्प नहीं समझ पाया। कृपया स्लॉट पिकर का उपयोग करें या फिर से प्रयास करें।`
+              : `I didn't catch a valid alternative. Please choose a time using the slot picker or try again.`;
+            onUpdate && onUpdate(fallbackMsg, "agent");
+            await speak(fallbackMsg);
+            running = false;
+            return;
+          }
+
+          // retry with chosen slot
+          payload.bookingTime = chosen;
+          onUpdate && onUpdate(`Trying to book ${chosen} now…`, "agent");
+          await speak(userLocale.startsWith('hi') ? `अब ${chosen} पर बुक करने की कोशिश कर रहा हूँ।` : `Trying to book ${chosen} now.`);
+
+          try {
+            const resp2 = await fetch("http://localhost:4000/api/bookings", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            });
+            const saved2 = await resp2.json();
+            if (resp2.ok) {
+              const doneMsg2 = userLocale.startsWith('hi')
+                ? `बुकिंग कन्फर्म हो गई। ${payload.customerName}, आपकी टेबल ${payload.bookingDate} को ${payload.bookingTime} पर बुक हो गई है।`
+                : `Booking confirmed. ${payload.customerName}, your table is booked for ${payload.bookingDate} at ${payload.bookingTime}. Seating preferred: ${saved2.seatingPreference || (saved2.weatherInfo && saved2.weatherInfo.seatingRecommendation) || "not available"}.`;
+              onUpdate && onUpdate(doneMsg2, "agent");
+              await speak(doneMsg2);
+              running = false;
+              return;
+            } else {
+              const secondFailMsg = userLocale.startsWith('hi')
+                ? `क्षमा करें, वह स्लॉट अभी-अभी लिया गया। कृपया स्लॉट पिकर से कोई अन्य समय चुनें।`
+                : `Sorry, that slot just got taken as well. Please choose another time using the slot picker.`;
+              onUpdate && onUpdate(secondFailMsg, "agent");
+              await speak(secondFailMsg);
+              running = false;
+              return;
+            }
+          } catch (err) {
+            console.error("Failed to post second booking attempt", err);
+            onUpdate && onUpdate(userLocale.startsWith('hi') ? "पुनः प्रयास करते समय नेटवर्क त्रुटि।" : "Network error while saving booking on retry.", "agent");
+            await speak(userLocale.startsWith('hi') ? "नेटवर्क त्रुटि हुई।" : "Network error while saving booking on retry.");
+            running = false;
+            return;
+          }
+        } else {
+          const noneMsg = userLocale.startsWith('hi')
+            ? `उस तारीख पर कोई वैकल्पिक स्लॉट उपलब्ध नहीं है। कृपया अलग तारीख आज़माएँ।`
+            : `No alternate slots available on that date. Please try another date.`;
+          onUpdate && onUpdate(noneMsg, "agent");
+          await speak(noneMsg);
+          running = false;
+          return;
+        }
+      } catch (e) {
+        console.error("Error handling conflict", e);
+        onUpdate && onUpdate(userLocale.startsWith('hi') ? "वैकल्पिक स्लॉट खोजते समय त्रुटि।" : "Error while trying to find alternate slots. Please try again.", "agent");
+        await speak(userLocale.startsWith('hi') ? "त्रुटि हुई। कृपया पुनः प्रयास करें।" : "Error while trying to find alternate slots. Please try again.");
+        running = false;
+        return;
+      }
+    }
+
+    // Non-409 error handling
+    const errMsg = saved && (saved.message || saved.error) ? (saved.message || saved.error) : (userLocale.startsWith('hi') ? "बुकिंग सेव करने में विफल" : "Failed to save booking");
+    onUpdate && onUpdate(`Error: ${errMsg}`, "agent");
+    await speak(userLocale.startsWith('hi') ? `मैं आपकी बुकिंग सेव नहीं कर पाया: ${errMsg}` : `I couldn't save your booking. ${errMsg}`);
     running = false;
   } catch (err) {
     console.error("Conversation error", err);

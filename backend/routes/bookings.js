@@ -20,6 +20,22 @@ function dbIsConnected() {
 }
 
 /**
+ * Helpers: localization
+ */
+function pickLocaleFromReq(req) {
+  // prefer explicit body.locale, then Accept-Language header
+  const fromBody = req && req.body && req.body.locale;
+  if (fromBody) return String(fromBody).toLowerCase();
+  const al = req && req.headers && (req.headers['accept-language'] || req.headers['accept_language']);
+  if (!al) return 'en';
+  return String(al).split(',')[0].toLowerCase();
+}
+function t(locale, enText, hiText) {
+  if (!locale) locale = 'en';
+  return String(locale).startsWith('hi') ? (hiText || enText) : enText;
+}
+
+/**
  * Helper: fetch weather from our own weather route
  * Returns an object: { weatherInfo: <raw forecast/cur>, seatingPreference: 'indoor'|'outdoor' }
  */
@@ -61,6 +77,76 @@ router.get('/', async (req, res) => {
 });
 
 /**
+ * GET /api/bookings/slots
+ * Query params:
+ *   date (required) - YYYY-MM-DD
+ *   open (optional) - opening time HH:MM (default 11:00)
+ *   close (optional) - closing time HH:MM (default 22:00)
+ *   duration (optional) - slot duration in minutes (default 30)
+ *
+ * Returns available and taken slots for the date.
+ */
+router.get('/slots', async (req, res) => {
+  try {
+    const date = req.query.date;
+    if (!date) return res.status(400).json({ error: 'Missing required query param: date (YYYY-MM-DD)' });
+
+    // parse optional params
+    const openTime = req.query.open || '11:00';
+    const closeTime = req.query.close || '22:00';
+    const duration = parseInt(req.query.duration || '30', 10);
+
+    // Helper: build array of slot times (HH:MM)
+    function buildSlots(openHHMM, closeHHMM, minutes) {
+      const [oh, om] = openHHMM.split(':').map(s => parseInt(s, 10));
+      const [ch, cm] = closeHHMM.split(':').map(s => parseInt(s, 10));
+      const start = new Date(0, 0, 0, oh, om, 0, 0);
+      const end = new Date(0, 0, 0, ch, cm, 0, 0);
+
+      const slots = [];
+      const cur = new Date(start);
+      while (cur <= end) {
+        const hh = String(cur.getHours()).padStart(2, '0');
+        const mm = String(cur.getMinutes()).padStart(2, '0');
+        slots.push(`${hh}:${mm}`);
+        cur.setMinutes(cur.getMinutes() + minutes);
+      }
+      return slots;
+    }
+
+    const allSlots = buildSlots(openTime, closeTime, duration);
+
+    // Find taken slots for that date
+    let taken = [];
+    if (dbIsConnected()) {
+      const bookings = await Booking.find({ bookingDate: date });
+      taken = bookings.map(b => (b.bookingTime || '').slice(0,5)).filter(Boolean);
+    } else {
+      taken = inMemoryBookings.filter(b => b.bookingDate === date).map(b => (b.bookingTime || '').slice(0,5)).filter(Boolean);
+    }
+
+    // Unique taken
+    taken = Array.from(new Set(taken));
+
+    // Available = allSlots - taken
+    const available = allSlots.filter(s => !taken.includes(s));
+
+    return res.json({
+      date,
+      open: openTime,
+      close: closeTime,
+      duration,
+      slots: allSlots,
+      taken,
+      available
+    });
+  } catch (err) {
+    console.error('Error computing slots', err);
+    return res.status(500).json({ error: 'Server error computing slots' });
+  }
+});
+
+/**
  * GET /api/bookings/:id
  */
 router.get('/:id', async (req, res) => {
@@ -84,6 +170,7 @@ router.get('/:id', async (req, res) => {
 /**
  * POST /api/bookings
  * Create a booking. Minimal validation + weather fetch
+ * Respects req.body.locale (e.g. "hi-IN") or Accept-Language header for localized messages.
  */
 router.post('/', async (req, res) => {
   try {
@@ -99,13 +186,53 @@ router.post('/', async (req, res) => {
       lon
     } = req.body;
 
+    // determine locale for messages
+    const locale = pickLocaleFromReq(req);
+
     // Log received payload for debugging
-    console.log('[BOOKINGS][RECEIVED PAYLOAD]', JSON.stringify(req.body));
+    console.log('[BOOKINGS][RECEIVED PAYLOAD]', JSON.stringify(req.body), 'locale=', locale);
 
     // Basic validation
     if (!bookingId || !customerName || !numberOfGuests || !bookingDate || !bookingTime) {
-      return res.status(400).json({ error: 'Missing required fields: bookingId, customerName, numberOfGuests, bookingDate, bookingTime' });
+      const errMsg = t(locale,
+        'Missing required fields: bookingId, customerName, numberOfGuests, bookingDate, bookingTime',
+        'आवश्यक फ़ील्ड गायब हैं: bookingId, customerName, numberOfGuests, bookingDate, bookingTime'
+      );
+      return res.status(400).json({ error: 'Missing required fields', message: errMsg });
     }
+
+    // --- Conflict check to prevent double-booking on same date+time ---
+    // If DB connected: check Mongo for existing booking at same date/time
+    if (dbIsConnected()) {
+      const existingAtSlot = await Booking.findOne({
+        bookingDate: bookingDate,
+        bookingTime: bookingTime
+      });
+      if (existingAtSlot) {
+        const msg = t(locale,
+          `There is already a booking at ${bookingDate} ${bookingTime}. Please choose a different time or date.`,
+          `इस समय पर (${bookingDate} ${bookingTime}) पहले से ही बुकिंग है। कृपया अलग समय या तारीख चुनें।`
+        );
+        return res.status(409).json({
+          error: 'Time slot unavailable',
+          message: msg
+        });
+      }
+    } else {
+      // If using in-memory store, check there too
+      const inMemConflict = inMemoryBookings.some(b => b.bookingDate === bookingDate && b.bookingTime === bookingTime);
+      if (inMemConflict) {
+        const msg = t(locale,
+          `There is already a booking at ${bookingDate} ${bookingTime} (in-memory). Please choose another time or date.`,
+          `इस समय पर (${bookingDate} ${bookingTime}) पहले से ही बुकिंग है (in-memory)। कृपया अलग समय या तारीख चुनें।`
+        );
+        return res.status(409).json({
+          error: 'Time slot unavailable',
+          message: msg
+        });
+      }
+    }
+    // --- end conflict check ---
 
     // Fetch weather (best-effort). Use provided lat/lon or default will be used by weather route.
     const { weatherInfo, seatingPreference: weatherSeating } = await fetchWeatherForDate(bookingDate, lat, lon);
@@ -121,7 +248,10 @@ router.post('/', async (req, res) => {
     if (dbIsConnected()) {
       // Use MongoDB
       const existing = await Booking.findOne({ bookingId });
-      if (existing) return res.status(400).json({ error: 'bookingId already exists' });
+      if (existing) {
+        const msg = t(locale, 'bookingId already exists', 'bookingId पहले से मौजूद है');
+        return res.status(400).json({ error: 'bookingId exists', message: msg });
+      }
 
       const booking = new Booking({
         bookingId,
@@ -137,12 +267,17 @@ router.post('/', async (req, res) => {
       });
 
       await booking.save();
-      // Return saved booking
-      return res.status(201).json(booking);
+      const successMsg = t(locale,
+        `Booking created for ${customerName} on ${bookingDate} at ${bookingTime}.`,
+        `${customerName} के लिए ${bookingDate} को ${bookingTime} पर बुकिंग बनाई गई।`
+      );
+      // Return saved booking and localized message
+      return res.status(201).json({ ...booking.toObject(), message: successMsg });
     } else {
       // Use in-memory store
       if (inMemoryBookings.some(b => b.bookingId === bookingId)) {
-        return res.status(400).json({ error: 'bookingId already exists (in-memory)' });
+        const msg = t(locale, 'bookingId already exists (in-memory)', 'bookingId पहले से मौजूद है (in-memory)');
+        return res.status(400).json({ error: 'bookingId exists (in-memory)', message: msg });
       }
       const booking = {
         bookingId,
@@ -158,7 +293,11 @@ router.post('/', async (req, res) => {
         createdAt: new Date().toISOString()
       };
       inMemoryBookings.push(booking);
-      return res.status(201).json(booking);
+      const successMsg = t(locale,
+        `Booking created for ${customerName} on ${bookingDate} at ${bookingTime}.`,
+        `${customerName} के लिए ${bookingDate} को ${bookingTime} पर बुकिंग बनाई गई।`
+      );
+      return res.status(201).json({ ...booking, message: successMsg });
     }
   } catch (err) {
     console.error('Error creating booking', err);

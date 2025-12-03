@@ -2,6 +2,14 @@
 import { useEffect, useState, useRef } from "react";
 import { startConversation, stopConversation, speak } from "./voice";
 
+function todayYMD() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+
 export default function App() {
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -11,7 +19,13 @@ export default function App() {
   const [locale, setLocale] = useState("auto"); // "auto" | "en-IN" | "hi-IN"
   const convoRef = useRef(null);
 
-  // load bookings
+  // slots modal state
+  const [showSlotsModal, setShowSlotsModal] = useState(false);
+  const [slotsDate, setSlotsDate] = useState(todayYMD());
+  const [slotsData, setSlotsData] = useState(null);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [toast, setToast] = useState(null);
+
   async function loadBookings() {
     setLoading(true);
     setError(null);
@@ -32,17 +46,6 @@ export default function App() {
     loadBookings();
   }, []);
 
-  // pretty display locale label
-  function localeLabel(l) {
-    if (!l || l === "auto") {
-      const nav = (navigator && navigator.language) || "en-IN";
-      return `Auto (${nav})`;
-    }
-    if (l === "en-IN") return "English (en-IN)";
-    if (l === "hi-IN") return "Hindi (hi-IN)";
-    return l;
-  }
-
   function appendMessage(text, who = "agent") {
     setMessages((m) => [...m, { id: Date.now() + Math.random(), who, text }]);
     setTimeout(() => {
@@ -59,7 +62,6 @@ export default function App() {
     let effLocale = locale;
     if (locale === "auto") {
       effLocale = (navigator && navigator.language) || "en-IN";
-      // normalize e.g. "en-US" -> "en-IN" only if English; but keep full code to allow variety
       if (effLocale.startsWith("en")) effLocale = "en-IN";
       if (effLocale.startsWith("hi")) effLocale = "hi-IN";
     }
@@ -73,7 +75,6 @@ export default function App() {
     };
 
     try {
-      // pass locale option
       await startConversation(onUpdate, { locale: effLocale });
     } catch (err) {
       console.error("startConversation error", err);
@@ -88,6 +89,55 @@ export default function App() {
     stopConversation();
     setListening(false);
     appendMessage("Stopped listening.", "agent");
+  }
+
+  // --- Slots modal helpers ---
+  async function fetchSlotsForDate(date) {
+    setSlotsLoading(true);
+    setSlotsData(null);
+    try {
+      const res = await fetch(`http://localhost:4000/api/bookings/slots?date=${encodeURIComponent(date)}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Server ${res.status}`);
+      }
+      const j = await res.json();
+      setSlotsData(j);
+    } catch (err) {
+      console.error("Failed to fetch slots", err);
+      setSlotsData({ error: err.message || String(err) });
+    } finally {
+      setSlotsLoading(false);
+    }
+  }
+
+  function openSlotsModal(defaultDate = todayYMD()) {
+    setSlotsDate(defaultDate);
+    setShowSlotsModal(true);
+    // fetch once opened
+    setTimeout(() => fetchSlotsForDate(defaultDate), 60);
+  }
+
+  function closeSlotsModal() {
+    setShowSlotsModal(false);
+    setSlotsData(null);
+  }
+
+  async function onPickSlot(slot) {
+    // copy to clipboard and show toast
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(slot);
+        setToast(`Copied "${slot}" to clipboard — you can paste it into your booking or speak it.`);
+      } else {
+        setToast(`Selected ${slot}. (Clipboard not available)`);
+      }
+      // auto-clear toast after 2.5s
+      setTimeout(() => setToast(null), 2500);
+    } catch (e) {
+      setToast(`Selected ${slot}`);
+      setTimeout(() => setToast(null), 2500);
+    }
   }
 
   return (
@@ -122,6 +172,21 @@ export default function App() {
             }}
           >
             {listening ? "Stop Conversation" : "Start Conversation"}
+          </button>
+
+          <button
+            onClick={() => {
+              openSlotsModal(todayYMD());
+            }}
+            style={{
+              padding: "8px 12px",
+              borderRadius: 8,
+              border: "1px solid #ddd",
+              background: "#fff",
+              cursor: "pointer"
+            }}
+          >
+            Check available slots
           </button>
 
           <button
@@ -294,6 +359,108 @@ export default function App() {
       <footer style={{ marginTop: 24, color: "#888", fontSize: 13 }}>
         Backend: <code>http://localhost:4000</code> — Bookings stored in MongoDB Atlas.
       </footer>
+
+      {/* Slots Modal */}
+      {showSlotsModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(0,0,0,0.4)",
+            zIndex: 9999
+          }}
+        >
+          <div style={{ width: 760, maxWidth: "95%", background: "#fff", borderRadius: 12, padding: 18 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <h3 style={{ margin: 0 }}>Available slots</h3>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  type="date"
+                  value={slotsDate}
+                  onChange={(e) => setSlotsDate(e.target.value)}
+                  style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid #ddd" }}
+                />
+                <button
+                  onClick={() => fetchSlotsForDate(slotsDate)}
+                  style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #ddd", cursor: "pointer" }}
+                >
+                  Check
+                </button>
+                <button onClick={closeSlotsModal} style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #ddd", cursor: "pointer" }}>
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              {slotsLoading && <div>Loading slots…</div>}
+              {!slotsLoading && !slotsData && <div style={{ color: "#666" }}>Choose a date and click Check.</div>}
+              {!slotsLoading && slotsData && slotsData.error && <div style={{ color: "red" }}>Error: {slotsData.error}</div>}
+
+              {!slotsLoading && slotsData && !slotsData.error && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div>
+                    <h4 style={{ marginTop: 0 }}>Available</h4>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {slotsData.available.length === 0 && <div style={{ color: "#666" }}>No available slots.</div>}
+                      {slotsData.available.map((s) => (
+                        <button
+                          key={s}
+                          onClick={() => onPickSlot(s)}
+                          style={{
+                            padding: "8px 10px",
+                            borderRadius: 8,
+                            border: "1px solid #e6f7ff",
+                            background: "#f0fbff",
+                            cursor: "pointer"
+                          }}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4 style={{ marginTop: 0 }}>Taken</h4>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {slotsData.taken.length === 0 && <div style={{ color: "#666" }}>No taken slots.</div>}
+                      {slotsData.taken.map((t) => (
+                        <div key={t} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #eee", background: "#fff", color: "#777" }}>
+                          {t}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={{ marginTop: 12, color: "#666", fontSize: 13 }}>
+              Tip: click an available slot to copy it to your clipboard for use in voice or manual booking flows.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div style={{
+          position: "fixed",
+          right: 18,
+          bottom: 18,
+          background: "#111",
+          color: "#fff",
+          padding: "10px 14px",
+          borderRadius: 10,
+          boxShadow: "0 6px 18px rgba(0,0,0,0.12)"
+        }}>{toast}</div>
+      )}
     </div>
   );
 }
