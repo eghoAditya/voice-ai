@@ -1,11 +1,8 @@
-// frontend/src/voice.js
-// Voice helper with weather-based seating suggestion.
-// Exports: startConversation(onUpdate), stopConversation(), speak(text)
 
 let running = false;
 let stopRequested = false;
 
-// ----- Voice selection & TTS -----
+// ---------- TTS (same robust speak as before) ----------
 function chooseBestVoice() {
   const voices = window.speechSynthesis.getVoices() || [];
   if (!voices.length) return null;
@@ -60,7 +57,7 @@ export function speak(text) {
   });
 }
 
-// ----- Recognition helper -----
+// ---------- Recognition helper ----------
 function listenOnce({ lang = "en-IN", timeoutMs = 14000 } = {}) {
   return new Promise((resolve) => {
     if (!("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) { resolve(""); return; }
@@ -102,7 +99,7 @@ async function speakThenListen(promptText) {
   return await listenOnce();
 }
 
-// ----- Parsing utilities -----
+// ---------- Parsing helpers (numbers/dates/times) ----------
 const SMALL_NUM = {
   zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10,
   eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19,
@@ -116,10 +113,9 @@ function parseNumberText(text) {
   if (digits) return parseInt(digits[0], 10);
   const parts = t.split(/\s+/).filter(p => !/guest/.test(p));
   let total = 0, seen = false;
-  for (let i=0;i<parts.length;i++){
+  for (let i = 0; i < parts.length; i++) {
     const w = parts[i];
     if (SMALL_NUM[w] !== undefined) {
-      // handle "twenty two"
       if (SMALL_NUM[w] >= 20 && i+1 < parts.length && SMALL_NUM[parts[i+1]] !== undefined && SMALL_NUM[parts[i+1]] < 10) {
         total += SMALL_NUM[w] + SMALL_NUM[parts[i+1]];
         seen = true;
@@ -172,23 +168,42 @@ function genBookingId(){ const ts = Date.now(); const rand = Math.floor(Math.ran
 
 export function stopConversation() { stopRequested = true; running = false; try { window.speechSynthesis.cancel(); } catch(e) {} }
 
-// ----- New: fetch weather suggestion from backend and ask seating preference -----
+// ---------- NEW: NLP call to /api/nlp/interpret ----------
+async function callNLP(text) {
+  try {
+    const resp = await fetch('http://localhost:4000/api/nlp/interpret', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    if (!resp.ok) {
+      const body = await resp.text();
+      console.warn('NLP call failed', resp.status, body);
+      return null;
+    }
+    const j = await resp.json();
+    if (j && j.success && j.intent) return j.intent;
+    if (j && j.intent && j.intent.rawText) return j.intent; // fallback
+    return null;
+  } catch (err) {
+    console.warn('NLP call error', err);
+    return null;
+  }
+}
+
+// ---------- Weather suggestion (same as previous) ----------
 async function fetchWeatherSuggestion(dateYMD, lat='12.9716', lon='77.5946') {
   try {
     const url = `http://localhost:4000/api/weather?date=${encodeURIComponent(dateYMD)}&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`;
     const r = await fetch(url);
-    if (!r.ok) {
-      return { ok:false, reason:`weather API returned ${r.status}` };
-    }
+    if (!r.ok) return { ok:false, reason:`weather API returned ${r.status}` };
     const data = await r.json();
-    // data.seatingRecommendation expected ('indoor'|'outdoor') and data.weatherSummary
     return { ok:true, data };
   } catch (err) {
     return { ok:false, reason: err.message || String(err) };
   }
 }
 
-// enhanced affirmative detection
 function isAffirmative(text) {
   if (!text) return false;
   const t = text.toLowerCase();
@@ -198,7 +213,7 @@ function isAffirmative(text) {
   return false;
 }
 
-// ----- Main conversation flow -----
+// ---------- Main conversation flow with NLP integration ----------
 export async function startConversation(onUpdate) {
   if (!("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
     const msg = "Speech recognition not supported. Use Chrome or Edge.";
@@ -214,32 +229,35 @@ export async function startConversation(onUpdate) {
     { key: "customerName", prompt: "Please tell me your name." },
     { key: "numberOfGuests", prompt: "How many guests?" },
     { key: "bookingDate", prompt: "What date would you like to book? You can say 'today' or 'tomorrow'." },
-    // We'll insert weather suggestion after bookingDate before continuing
+    // weather suggestion will happen before bookingTime
     { key: "bookingTime", prompt: "What time would you like?" },
     { key: "cuisinePreference", prompt: "Any cuisine preference?" },
     { key: "specialRequests", prompt: "Any special requests? Say 'no' if none." }
   ];
 
   const answers = {};
-  let seatingPreferenceFromUser = null; // will set if user answers suggestion
+  let seatingPreferenceFromUser = null;
 
   try {
     const greet = "Hello! I will help you book a table. I will ask some quick questions.";
     onUpdate && onUpdate(greet, "agent");
     await speak(greet);
 
-    for (let i=0;i<flow.length;i++){
+    for (let i = 0; i < flow.length; i++) {
       if (stopRequested) break;
       const q = flow[i];
 
-      // After user answered bookingDate we want to do weather suggestion before moving on.
+      // If NLP already filled this field, skip asking
+      if (answers[q.key] && answers[q.key].length > 0) {
+        continue;
+      }
+
+      // Ask bookingTime and run weather suggestion if bookingDate was answered
       if (q.key === 'bookingTime') {
-        // bookingDate should already be present in answers.bookingDate
         const rawDateText = answers.bookingDate || "";
         const parsedDate = parseDateText(rawDateText) || new Date();
         const dateYMD = formatDateYMD(parsedDate);
 
-        // fetch weather suggestion (best-effort)
         onUpdate && onUpdate(`Checking weather for ${dateYMD}…`, "agent");
         const weatherResp = await fetchWeatherSuggestion(dateYMD);
         let suggestionText = "";
@@ -252,55 +270,87 @@ export async function startConversation(onUpdate) {
           } else if (rec === 'indoor') {
             suggestionText = `It might rain on ${dateYMD}. I'd recommend our cozy indoor area. Would you like that?`;
           } else {
-            // unknown or approximate
             suggestionText = `I checked the weather for ${dateYMD}: ${summary || 'forecast not available'}. Would you prefer indoor seating?`;
           }
         } else {
           suggestionText = `I couldn't fetch the forecast for ${dateYMD}. Would you prefer indoor seating by default?`;
         }
 
-        // ask suggestion and listen for preference
         onUpdate && onUpdate(suggestionText, "agent");
         await speak(suggestionText);
-
-        // listen for yes/no/preference
         const prefResp = await listenOnce();
         onUpdate && onUpdate(prefResp || "", "user");
         if (isAffirmative(prefResp)) {
-          // If suggestion was outdoor phrased, user said yes -> outdoor, else if interior suggestion yes -> indoor
           if (weatherResp.ok && weatherResp.data && ((weatherResp.data.seatingRecommendation || '').toLowerCase() === 'outdoor')) {
             seatingPreferenceFromUser = 'outdoor';
           } else if (weatherResp.ok && weatherResp.data && ((weatherResp.data.seatingRecommendation || '').toLowerCase() === 'indoor')) {
             seatingPreferenceFromUser = 'indoor';
           } else {
-            // positive answer — prefer outdoor? ask clarifying? we'll assume 'indoor' as safe default if unknown suggestion asked indoor.
             seatingPreferenceFromUser = (weatherResp.ok && weatherResp.data && (weatherResp.data.seatingRecommendation === 'outdoor')) ? 'outdoor' : 'indoor';
           }
         } else {
-          // user didn't confirm — assume opposite of suggestion when they say no, or leave null
           if (weatherResp.ok && weatherResp.data) {
             const rec = (weatherResp.data.seatingRecommendation || '').toLowerCase();
             seatingPreferenceFromUser = (rec === 'outdoor') ? 'indoor' : (rec === 'indoor' ? 'outdoor' : null);
           } else {
-            seatingPreferenceFromUser = 'indoor'; // safe default
+            seatingPreferenceFromUser = 'indoor';
           }
         }
-        // continue to the bookingTime prompt after suggestion
       }
 
-      // ask the question normally
+      // Ask the question normally — but before listening, allow NLP to try to extract fields from a long transcript
       onUpdate && onUpdate(q.prompt, "agent");
       await speak(q.prompt);
       let transcript = await listenOnce();
-      if (!transcript) {
-        const reprompt = "I didn't catch that. " + q.prompt;
-        onUpdate && onUpdate(reprompt, "agent");
-        await speak(reprompt);
-        transcript = await listenOnce();
+
+      // If transcript looks like a full multi-field sentence, call NLP to extract info
+      const shouldCallNLP = transcript && (
+        transcript.split(/\s+/).length > 4 ||
+        /book|reserve|tomorrow|tonight|for|at|people|guests|table/i.test(transcript)
+      );
+
+      if (shouldCallNLP) {
+        onUpdate && onUpdate("(interpreting intent…)", "agent");
+        const intent = await callNLP(transcript);
+        if (intent) {
+          // Merge fields returned by NLP into answers if not already present
+          if (intent.bookingDate && !answers.bookingDate) answers.bookingDate = intent.bookingDate;
+          if (intent.bookingTime && !answers.bookingTime) answers.bookingTime = intent.bookingTime;
+          if ((intent.numberOfGuests || intent.numberOfGuests === 0) && !answers.numberOfGuests) answers.numberOfGuests = String(intent.numberOfGuests || intent.numberOfGuests === 0 ? intent.numberOfGuests : "");
+          if (intent.cuisinePreference && !answers.cuisinePreference) answers.cuisinePreference = intent.cuisinePreference;
+          if (intent.specialRequests && !answers.specialRequests) answers.specialRequests = intent.specialRequests;
+          // If NLP returned a seating preference or weather-influenced suggestion, capture it
+          if (intent.seatingPreference && !seatingPreferenceFromUser) seatingPreferenceFromUser = intent.seatingPreference;
+
+          // Append the NLP-detected fields to the UI
+          onUpdate && onUpdate(`(interpreter) ${JSON.stringify(intent)}`, "agent");
+          // If NLP filled the field we just asked, no need to ask again
+          if (answers[q.key] && answers[q.key].length > 0) {
+            // show the parsed answer as user text
+            onUpdate && onUpdate(answers[q.key], "user");
+            transcript = answers[q.key];
+          } else {
+            // If NLP filled many fields, we may skip to the next iteration (so continue)
+            if (answers[q.key] && answers[q.key].length > 0) {
+              continue;
+            }
+          }
+        }
       }
-      onUpdate && onUpdate(transcript || "", "user");
-      answers[q.key] = transcript || "";
-    }
+
+      // If NLP did not fill the field, use the transcript (possibly empty)
+      if (!answers[q.key] || answers[q.key].length === 0) {
+        // If transcript empty, reprompt once
+        if (!transcript) {
+          const reprompt = "I didn't catch that. " + q.prompt;
+          onUpdate && onUpdate(reprompt, "agent");
+          await speak(reprompt);
+          transcript = await listenOnce();
+        }
+        onUpdate && onUpdate(transcript || "", "user");
+        answers[q.key] = transcript || "";
+      }
+    } // end for flow
 
     if (stopRequested) {
       onUpdate && onUpdate("Stopped listening.", "agent");
@@ -309,7 +359,7 @@ export async function startConversation(onUpdate) {
       return;
     }
 
-    // normalize inputs
+    // normalization & build payload
     const parsedDate = parseDateText(answers.bookingDate || "") || new Date();
     const bookingDateYMD = formatDateYMD(parsedDate);
     const parsedTime = parseTimeText(answers.bookingTime || "") || "19:00";
@@ -334,10 +384,9 @@ export async function startConversation(onUpdate) {
       lon: "77.5946"
     };
 
-    // include seatingPreference if user explicitly chose
     if (seatingPreferenceFromUser) payload.seatingPreference = seatingPreferenceFromUser;
 
-    // confirm with user
+    // final confirm
     const confirmText = `Confirming: ${payload.customerName}, ${payload.numberOfGuests} guests, on ${payload.bookingDate} at ${payload.bookingTime}. Shall I book this? Say yes to confirm.`;
     onUpdate && onUpdate(confirmText, "agent");
     await speak(confirmText);

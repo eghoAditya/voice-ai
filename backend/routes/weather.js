@@ -1,11 +1,9 @@
-// backend/routes/weather.js
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 
 const OPENWEATHER_KEY = process.env.OPENWEATHER_KEY;
 
-// Helper: parse YYYY-MM-DD to UTC midnight timestamp (seconds)
 function ymdToUtcSeconds(ymd) {
   const parts = ymd.split('-').map(p => parseInt(p, 10));
   if (parts.length !== 3 || parts.some(isNaN)) return null;

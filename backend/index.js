@@ -23,7 +23,8 @@ if (MONGO_URI) {
 }
 
 
-// health route
+
+// Health route
 app.get('/', (req, res) => {
   res.send('Voice Booking Backend OK');
 });
@@ -31,6 +32,10 @@ app.get('/', (req, res) => {
 // mount api routes
 app.use('/api/bookings', bookingsRouter);
 app.use('/api/weather', weatherRouter);
+
+const nlpRoute = require('./routes/nlp');
+app.use('/api/nlp', nlpRoute);
+
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
