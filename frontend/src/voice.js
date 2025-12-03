@@ -327,7 +327,6 @@ function parseTimeText(text) {
   }
   return null;
 }
-
 function genBookingId(){ const ts = Date.now(); const rand = Math.floor(Math.random()*9000)+1000; return `bk-${ts}-${rand}`; }
 
 export function stopConversation() { stopRequested = true; running = false; try { window.speechSynthesis.cancel(); } catch(e) {} }
@@ -445,6 +444,10 @@ export async function startConversation(onUpdate, options = {}) {
   const userLocale = (options && options.locale) ? options.locale : 'en-IN';
   ttsLang = userLocale;
 
+  // Extract contact info if provided
+  const userPhone = options && options.phone ? String(options.phone).trim() : undefined;
+  const userEmail = options && options.email ? String(options.email).trim() : undefined;
+
   if (!("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
     const msg = userLocale.startsWith('hi') ? "Speech recognition not supported. Use Chrome (Hindi support requires Chrome/Edge)." : "Speech recognition not supported. Use Chrome or Edge.";
     onUpdate && onUpdate(msg, "agent");
@@ -472,111 +475,161 @@ export async function startConversation(onUpdate, options = {}) {
     onUpdate && onUpdate(greet, "agent");
     await speak(greet);
 
+    // If contact not provided via UI options, ask first (required)
+    if (!userPhone && !userEmail) {
+      const askContactText = userLocale.startsWith('hi')
+        ? "कृपया अपना फोन नंबर या ईमेल बताइए — हमें बुकिंग कन्फर्मेशन भेजना ज़रूरी है। आप 'फोन' या 'ईमेल' बोलकर चुन सकते हैं।"
+        : "Please provide a phone number or email — we need it to send booking confirmation. Say 'phone' or 'email' to choose.";
+      onUpdate && onUpdate(askContactText, "agent");
+      await speak(askContactText);
+      const contactChoice = await listenOnce({ lang: userLocale });
+      onUpdate && onUpdate(contactChoice || "", "user");
+
+      if (contactChoice && /phone|फोन|mobile|मोबाइल/i.test(contactChoice)) {
+        onUpdate && onUpdate(userLocale.startsWith('hi') ? "कृपया अपना फोन नंबर बोलें (या 'skip' कहें)।" : "Please say your phone number now (or say 'skip').", "agent");
+        await speak(userLocale.startsWith('hi') ? "कृपया अपना फोन नंबर बोलें।" : "Please say your phone number.");
+        const ph = await listenOnce({ lang: userLocale });
+        onUpdate && onUpdate(ph || "", "user");
+        if (ph) answers._collectedPhone = ph.trim();
+      } else if (contactChoice && /email|ईमेल/i.test(contactChoice)) {
+        onUpdate && onUpdate(userLocale.startsWith('hi') ? "कृपया अपना ईमेल बोलें (या 'skip' कहें)।" : "Please say your email now (or say 'skip').", "agent");
+        await speak(userLocale.startsWith('hi') ? "कृपया अपना ईमेल बोलें।" : "Please say your email.");
+        const em = await listenOnce({ lang: userLocale });
+        onUpdate && onUpdate(em || "", "user");
+        if (em) answers._collectedEmail = em.trim();
+      } else {
+        // ambiguous — continue, UI might still have contact
+        onUpdate && onUpdate(userLocale.startsWith('hi') ? "ठीक है — आगे बढ़ रहे हैं। कृपया बाद में संपर्क दें।" : "Okay — continuing. You can provide contact later.", "agent");
+        await speak(userLocale.startsWith('hi') ? "ठीक है — आगे बढ़ रहे हैं।" : "Okay — continuing.");
+      }
+    }
+
+    // iterate flow — each iteration is wrapped in a try/catch so one error won't abort the entire conversation
     for (let i = 0; i < flow.length; i++) {
       if (stopRequested) break;
       const q = flow[i];
 
+      // If already have an answer (e.g., NLP prefilled), skip
       if (answers[q.key] && answers[q.key].length > 0) continue;
 
-      // Before bookingTime: check weather and ask seating preference
-      if (q.key === 'bookingTime') {
-        const rawDateText = answers.bookingDate || "";
-        const parsedDate = parseDateText(rawDateText) || new Date();
-        const dateYMD = formatDateYMD(parsedDate);
+      try {
+        // --- special-case seating suggestion for bookingTime (unchanged logic) ---
+        if (q.key === 'bookingTime') {
+          const rawDateText = answers.bookingDate || "";
+          const parsedDate = parseDateText(rawDateText) || new Date();
+          const dateYMD = formatDateYMD(parsedDate);
 
-        onUpdate && onUpdate(`Checking weather for ${dateYMD}…`, "agent");
-        const weatherResp = await fetchWeatherSuggestion(dateYMD);
-        let suggestionText = "";
-        let rec = '';
+          onUpdate && onUpdate(`Checking weather for ${dateYMD}…`, "agent");
+          const weatherResp = await fetchWeatherSuggestion(dateYMD);
+          let suggestionText = "";
+          let rec = '';
 
-        if (weatherResp.ok && weatherResp.data) {
-          const w = weatherResp.data;
-          rec = (w.seatingRecommendation || w.seatingPreference || '').toLowerCase();
-          const summary = w.weatherSummary || "";
-          if (rec === 'outdoor') {
-            suggestionText = userLocale.startsWith('hi') ? `उस तारीख ${dateYMD} का मौसम अच्छा है! क्या आप outdoor seating चुनना चाहेंगे?` : `The weather looks great on ${dateYMD}! Would you prefer outdoor seating?`;
-          } else if (rec === 'indoor') {
-            suggestionText = userLocale.startsWith('hi') ? `संभावना है कि बारिश होगी ${dateYMD}। मैं इनडोर सीटिंग की सलाह दूँगा। क्या आप चाहेंगे?` : `It might rain on ${dateYMD}. I'd recommend our cozy indoor area. Would you like that?`;
+          if (weatherResp.ok && weatherResp.data) {
+            const w = weatherResp.data;
+            rec = (w.seatingRecommendation || w.seatingPreference || '').toLowerCase();
+            const summary = w.weatherSummary || "";
+            if (rec === 'outdoor') {
+              suggestionText = `The weather looks great on ${dateYMD}! Would you prefer outdoor seating?`;
+            } else if (rec === 'indoor') {
+              suggestionText = `It might rain on ${dateYMD}. I'd recommend our cozy indoor area. Would you like that?`;
+            } else {
+              suggestionText = `I checked the weather for ${dateYMD}: ${summary || 'forecast not available'}. Would you prefer outdoor seating?`;
+              rec = 'outdoor';
+            }
           } else {
-            suggestionText = userLocale.startsWith('hi') ? `मैंने ${dateYMD} का मौसम देखा: ${summary || 'पूर्वानुमान उपलब्ध नहीं'}. क्या आप outdoor seating चाहेंगे?` : `I checked the weather for ${dateYMD}: ${summary || 'forecast not available'}. Would you prefer outdoor seating?`;
-            rec = 'outdoor';
+            suggestionText = `I couldn't fetch the forecast for ${dateYMD}. Would you prefer indoor seating by default?`;
+            rec = 'indoor';
           }
-        } else {
-          suggestionText = userLocale.startsWith('hi') ? `मैं ${dateYMD} के लिए पूर्वानुमान नहीं ला पाया। क्या आप डिफ़ॉल्ट रूप से इनडोर चाहेंगे?` : `I couldn't fetch the forecast for ${dateYMD}. Would you prefer indoor seating by default?`;
-          rec = 'indoor';
-        }
 
-        onUpdate && onUpdate(suggestionText, "agent");
-        await speak(suggestionText);
-        const prefResp = await listenOnce({ lang: userLocale });
-        onUpdate && onUpdate(prefResp || "", "user");
+          onUpdate && onUpdate(suggestionText, "agent");
+          await speak(suggestionText);
+          const prefResp = (typeof listenWithFallback === 'function') ? await listenWithFallback(userLocale) : await listenOnce({ lang: userLocale });
+          onUpdate && onUpdate(prefResp || "", "user");
 
-        function isNegative(text) {
-          if (!text) return false;
-          const t = String(text).toLowerCase();
-          const noWords = ["no","nah","nope","dont","don't","cancel","not","n","नहीं","ना","नही","न","नो"];
-          for (const w of noWords) if (t.includes(w)) return true;
-          return false;
-        }
+          function isNegative(text) {
+            if (!text) return false;
+            const t = String(text).toLowerCase();
+            const noWords = ["no","nah","nope","dont","don't","cancel","not","n","नहीं","ना","नही","न","नो"];
+            for (const w of noWords) if (t.includes(w)) return true;
+            return false;
+          }
 
-        const affirmative = isAffirmative(prefResp);
-        const negative = isNegative(prefResp);
+          const affirmative = isAffirmative(prefResp);
+          const negative = isNegative(prefResp);
 
-        if (affirmative && !negative) {
-          seatingPreferenceFromUser = (rec === 'outdoor') ? 'outdoor' : (rec === 'indoor' ? 'indoor' : rec || 'outdoor');
-        } else if (negative && !affirmative) {
-          seatingPreferenceFromUser = (rec === 'outdoor') ? 'indoor' : (rec === 'indoor' ? 'outdoor' : 'indoor');
-        } else {
-          seatingPreferenceFromUser = null; // ambiguous -> backend decides
-        }
+          if (affirmative && !negative) {
+            seatingPreferenceFromUser = (rec === 'outdoor') ? 'outdoor' : (rec === 'indoor' ? 'indoor' : rec || 'outdoor');
+          } else if (negative && !affirmative) {
+            seatingPreferenceFromUser = (rec === 'outdoor') ? 'indoor' : (rec === 'indoor' ? 'outdoor' : 'indoor');
+          } else {
+            seatingPreferenceFromUser = null;
+          }
 
-        if (seatingPreferenceFromUser) {
-          answers.seatingPreference = seatingPreferenceFromUser;
-          onUpdate && onUpdate(`(seating preference set to ${seatingPreferenceFromUser})`, "agent");
-        } else {
-          onUpdate && onUpdate(`(seating preference: user did not choose explicitly)`, "agent");
-        }
-      }
-
-      // Ask the main prompt and listen
-      onUpdate && onUpdate(q.prompt, "agent");
-      await speak(q.prompt);
-      let transcript = await listenOnce({ lang: userLocale });
-
-      const shouldCallNLP = transcript && (
-        transcript.split(/\s+/).length > 4 ||
-        /book|reserve|tomorrow|tonight|for|at|people|guests|table|कितने|कल|आज|टेबिल|बुक/i.test(transcript)
-      );
-
-      if (shouldCallNLP) {
-        onUpdate && onUpdate("(interpreting intent…)", "agent");
-        const intent = await callNLP(transcript, userLocale);
-        if (intent) {
-          if (intent.bookingDate && !answers.bookingDate) answers.bookingDate = intent.bookingDate;
-          if (intent.bookingTime && !answers.bookingTime) answers.bookingTime = intent.bookingTime;
-          if ((intent.numberOfGuests || intent.numberOfGuests === 0) && !answers.numberOfGuests) answers.numberOfGuests = String(intent.numberOfGuests || intent.numberOfGuests === 0 ? intent.numberOfGuests : "");
-          if (intent.cuisinePreference && !answers.cuisinePreference) answers.cuisinePreference = intent.cuisinePreference;
-          if (intent.specialRequests && !answers.specialRequests) answers.specialRequests = intent.specialRequests;
-          if (intent.seatingPreference && !seatingPreferenceFromUser) seatingPreferenceFromUser = intent.seatingPreference;
-
-          onUpdate && onUpdate(`(interpreter) ${JSON.stringify(intent)}`, "agent");
-
-          if (answers[q.key] && answers[q.key].length > 0) {
-            onUpdate && onUpdate(answers[q.key], "user");
-            transcript = answers[q.key];
+          if (seatingPreferenceFromUser) {
+            answers.seatingPreference = seatingPreferenceFromUser;
+            onUpdate && onUpdate(`(seating preference set to ${seatingPreferenceFromUser})`, "agent");
+            try { console.debug("[SEATING] user choice:", seatingPreferenceFromUser, "prefResp:", prefResp, "weatherRec:", rec); } catch(e) {}
+          } else {
+            onUpdate && onUpdate(`(seating preference: user did not choose explicitly)`, "agent");
+            try { console.debug("[SEATING] user ambiguous; prefResp:", prefResp, "weatherRec:", rec); } catch(e) {}
           }
         }
-      }
 
-      if (!answers[q.key] || answers[q.key].length === 0) {
-        if (!transcript) {
-          const reprompt = userLocale.startsWith('hi') ? "मैंने नहीं सुना। कृपया फिर कहें। " + q.prompt : "I didn't catch that. " + q.prompt;
-          onUpdate && onUpdate(reprompt, "agent");
-          await speak(reprompt);
-          transcript = await listenOnce({ lang: userLocale });
+        // --- ask the question and listen ---
+        onUpdate && onUpdate(q.prompt, "agent");
+        await speak(q.prompt);
+        let transcript = await listenOnce({ lang: userLocale });
+
+        // decide whether to call NLP
+        const shouldCallNLP = transcript && (
+          transcript.split(/\s+/).length > 4 ||
+          /book|reserve|tomorrow|tonight|for|at|people|guests|table|कितने|कल|आज|टेबिल|बुक/i.test(transcript)
+        );
+
+        if (shouldCallNLP) {
+          onUpdate && onUpdate("(interpreting intent…)", "agent");
+          const intent = await callNLP(transcript, userLocale);
+          if (intent) {
+            try {
+              if (intent.bookingDate && !answers.bookingDate) answers.bookingDate = intent.bookingDate;
+              if (intent.bookingTime && !answers.bookingTime) answers.bookingTime = intent.bookingTime;
+              if ((intent.numberOfGuests || intent.numberOfGuests === 0) && !answers.numberOfGuests) answers.numberOfGuests = String(intent.numberOfGuests || intent.numberOfGuests === 0 ? intent.numberOfGuests : "");
+              if (intent.cuisinePreference && !answers.cuisinePreference) answers.cuisinePreference = intent.cuisinePreference;
+              if (intent.specialRequests && !answers.specialRequests) answers.specialRequests = intent.specialRequests;
+              if (intent.seatingPreference && !seatingPreferenceFromUser) seatingPreferenceFromUser = intent.seatingPreference;
+            } catch (e) {
+              console.warn("Interpreter mapping error", e);
+            }
+            onUpdate && onUpdate(`(interpreter) ${JSON.stringify(intent)}`, "agent");
+
+            if (answers[q.key] && answers[q.key].length > 0) {
+              onUpdate && onUpdate(answers[q.key], "user");
+              transcript = answers[q.key];
+            }
+          }
         }
-        onUpdate && onUpdate(transcript || "", "user");
-        answers[q.key] = transcript || "";
+
+        if (!answers[q.key] || answers[q.key].length === 0) {
+          if (!transcript) {
+            const reprompt = userLocale.startsWith('hi') ? "मैंने नहीं सुना। कृपया फिर कहें। " + q.prompt : "I didn't catch that. " + q.prompt;
+            onUpdate && onUpdate(reprompt, "agent");
+            await speak(reprompt);
+            transcript = await listenOnce({ lang: userLocale });
+          }
+          onUpdate && onUpdate(transcript || "", "user");
+          answers[q.key] = transcript || "";
+        }
+
+      } catch (iterationErr) {
+        // Log full stack for debugging but keep conversation alive.
+        console.error("Conversation step error:", iterationErr);
+        // Notify the user and reprompt the same question
+        const errMsg = userLocale.startsWith('hi') ? "मुझे थोड़ी समस्या हुई — कृपया फिर से कहें।" : "Sorry, I had a small problem — please say that again.";
+        onUpdate && onUpdate(errMsg, "agent");
+        try { await speak(errMsg); } catch(e) {}
+        // decrement i to repeat same question
+        i = i - 1;
+        continue;
       }
     }
 
@@ -610,17 +663,22 @@ export async function startConversation(onUpdate, options = {}) {
       cuisinePreference: answers.cuisinePreference || "",
       specialRequests: special,
       lat: "12.9716",
-      lon: "77.5946"
+      lon: "77.5946",
+      locale: userLocale
     };
 
-    // include locale so backend can return localized messages
-    payload.locale = userLocale;
+    // include contact info: priority = options -> collected from voice -> nothing
+    if (userPhone) payload.phone = userPhone;
+    else if (answers._collectedPhone) payload.phone = answers._collectedPhone;
+
+    if (userEmail) payload.email = userEmail;
+    else if (answers._collectedEmail) payload.email = answers._collectedEmail;
 
     // prefer explicit user selection (seatingPreferenceFromUser), else interpreter/answers
     const chosenSeating = seatingPreferenceFromUser || answers.seatingPreference || null;
     if (chosenSeating) payload.seatingPreference = chosenSeating;
 
-    // Confirm (localized)
+    // final confirm (localized)
     const confirmText = userLocale.startsWith('hi')
       ? `कन्फर्म कर रहा हूँ: ${payload.customerName}, ${payload.numberOfGuests} मेहमान, ${payload.bookingDate} को ${payload.bookingTime}। क्या मैं बुक कर दूँ? हाँ कहकर कन्फर्म करें।`
       : `Confirming: ${payload.customerName}, ${payload.numberOfGuests} guests, on ${payload.bookingDate} at ${payload.bookingTime}. Shall I book this? Say yes to confirm.`;
@@ -665,8 +723,27 @@ export async function startConversation(onUpdate, options = {}) {
       const doneMsg = userLocale.startsWith('hi')
         ? `बुकिंग कन्फर्म हो गई। ${payload.customerName}, आपकी टेबल ${payload.bookingDate} को ${payload.bookingTime} पर बुक हो गई है।`
         : `Booking confirmed. ${payload.customerName}, your table is booked for ${payload.bookingDate} at ${payload.bookingTime}. Seating preferred: ${saved.seatingPreference || (saved.weatherInfo && saved.weatherInfo.seatingRecommendation) || "not available"}.`;
+
       onUpdate && onUpdate(doneMsg, "agent");
       await speak(doneMsg);
+
+      // Announce that confirmation was sent (based on payload inputs)
+      const sentVia = [];
+      if (payload.phone) sentVia.push('sms');
+      if (payload.email) sentVia.push('email');
+
+      if (sentVia.length > 0) {
+        const viaText = userLocale.startsWith('hi')
+          ? (payload.phone && payload.email
+             ? `हमने पुष्टि SMS और ईमेल दोनों भेज दिए हैं।`
+             : (payload.phone ? `हमने पुष्टि SMS भेज दी है।` : `हमने पुष्टि ईमेल भेज दिया है।`))
+          : (payload.phone && payload.email
+             ? `We've sent a confirmation via SMS and Email.`
+             : (payload.phone ? `We've sent a confirmation via SMS.` : `We've sent a confirmation via Email.`));
+        onUpdate && onUpdate(viaText, "agent");
+        await speak(viaText);
+      }
+
       running = false;
       return;
     }
@@ -723,6 +800,18 @@ export async function startConversation(onUpdate, options = {}) {
                 : `Booking confirmed. ${payload.customerName}, your table is booked for ${payload.bookingDate} at ${payload.bookingTime}. Seating preferred: ${saved2.seatingPreference || (saved2.weatherInfo && saved2.weatherInfo.seatingRecommendation) || "not available"}.`;
               onUpdate && onUpdate(doneMsg2, "agent");
               await speak(doneMsg2);
+
+              // Announce confirmations sent
+              const viaText2 = userLocale.startsWith('hi')
+                ? (payload.phone && payload.email
+                   ? `हमने पुष्टि SMS और ईमेल दोनों भेज दिए हैं।`
+                   : (payload.phone ? `हमने पुष्टि SMS भेज दी है।` : `हमने पुष्टि ईमेल भेज दिया है।`))
+                : (payload.phone && payload.email
+                   ? `We've sent a confirmation via SMS and Email.`
+                   : (payload.phone ? `We've sent a confirmation via SMS.` : `We've sent a confirmation via Email.`));
+              onUpdate && onUpdate(viaText2, "agent");
+              await speak(viaText2);
+
               running = false;
               return;
             } else {

@@ -19,6 +19,11 @@ export default function App() {
   const [locale, setLocale] = useState("auto"); // "auto" | "en-IN" | "hi-IN"
   const convoRef = useRef(null);
 
+  // contact UI state
+  const [contactMode, setContactMode] = useState("none"); // none | email | phone | both
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+
   // slots modal state
   const [showSlotsModal, setShowSlotsModal] = useState(false);
   const [slotsDate, setSlotsDate] = useState(todayYMD());
@@ -53,7 +58,16 @@ export default function App() {
     }, 40);
   }
 
-  // start conversation with selected locale
+  // compute whether contact inputs satisfy the requirement to enable start
+  function contactProvided() {
+    if (contactMode === "none") return false;
+    if (contactMode === "email") return email.trim().length > 3;
+    if (contactMode === "phone") return phone.trim().length > 5;
+    if (contactMode === "both") return email.trim().length > 3 && phone.trim().length > 5;
+    return false;
+  }
+
+  // start conversation with selected locale and contact info
   async function handleStartConversation() {
     setMessages([]);
     setListening(true);
@@ -69,13 +83,18 @@ export default function App() {
     const onUpdate = (text, who) => {
       const whoNorm = who === "user" ? "user" : "agent";
       appendMessage(text, whoNorm);
-      if (typeof text === "string" && text.toLowerCase().includes("booking confirmed")) {
+      if (typeof text === "string" && (text.toLowerCase().includes("booking confirmed") || text.toLowerCase().includes("बुकिंग कन्फर्म"))) {
         setTimeout(() => loadBookings(), 1200);
       }
     };
 
+    // pass contact info via options; if contactMode none, still pass nothing (voice will ask)
+    const options = { locale: effLocale };
+    if (contactMode === "email" || contactMode === "both") options.email = email.trim();
+    if (contactMode === "phone" || contactMode === "both") options.phone = phone.trim();
+
     try {
-      await startConversation(onUpdate, { locale: effLocale });
+      await startConversation(onUpdate, options);
     } catch (err) {
       console.error("startConversation error", err);
       appendMessage("Conversation error. Please try again.", "agent");
@@ -170,6 +189,8 @@ export default function App() {
               background: listening ? "#ffecec" : "#fff",
               cursor: "pointer"
             }}
+            disabled={!contactProvided() && contactMode !== "none" } // if user selected a contact mode, require it; if "none" allow start (voice will ask)
+            title={contactMode !== "none" && !contactProvided() ? "Please enter phone/email for this contact mode" : ""}
           >
             {listening ? "Stop Conversation" : "Start Conversation"}
           </button>
@@ -205,6 +226,48 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* Contact selector above conversation */}
+      <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 12 }}>
+        <label style={{ fontSize: 13, color: "#333", minWidth: 120 }}>Contact method (required)</label>
+        <select
+          value={contactMode}
+          onChange={(e) => setContactMode(e.target.value)}
+          style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd" }}
+        >
+          <option value="none">Let voice ask (voice will require contact)</option>
+          <option value="email">Email only</option>
+          <option value="phone">Phone only (SMS)</option>
+          <option value="both">Both (Email & SMS)</option>
+        </select>
+
+        {/* show inputs based on selection */}
+        {(contactMode === "email" || contactMode === "both") && (
+          <input
+            placeholder="you@example.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd", width: 250 }}
+            type="email"
+            aria-label="Email for booking confirmation"
+          />
+        )}
+
+        {(contactMode === "phone" || contactMode === "both") && (
+          <input
+            placeholder="+91xxxxxxxxxx"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd", width: 170 }}
+            type="tel"
+            aria-label="Phone for booking confirmation"
+          />
+        )}
+
+        <div style={{ marginLeft: "auto", color: "#666", fontSize: 13 }}>
+          (You can also choose "Let voice ask" and provide contact by speaking.)
+        </div>
+      </div>
 
       <section style={{ marginTop: 18 }}>
         <h2 style={{ fontSize: 16, marginBottom: 8 }}>Conversation</h2>
