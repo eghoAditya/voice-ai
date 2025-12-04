@@ -1,4 +1,3 @@
-// frontend/src/App.jsx
 import { useEffect, useState, useRef } from "react";
 import { startConversation, stopConversation, speak } from "./voice";
 import AdminPanel from "./adminpanel"; 

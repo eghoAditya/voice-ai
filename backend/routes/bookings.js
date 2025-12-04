@@ -1,11 +1,9 @@
-// backend/routes/bookings.js
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const Booking = require('../models/Booking');
 const axios = require('axios');
 
-// Notification libs (optional)
 let twilioClient = null;
 let nodemailer = null;
 try {
@@ -26,17 +24,13 @@ const BACKEND_ORIGIN = `http://localhost:${BACKEND_PORT}`;
 // Simple in-memory fallback store (non-persistent) used when MongoDB isn't connected.
 const inMemoryBookings = [];
 
-/**
- * Helper: check if mongoose is connected properly
- */
+
 function dbIsConnected() {
   // readyState: 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
   return mongoose.connection && mongoose.connection.readyState === 1;
 }
 
-/**
- * Helpers: localization
- */
+
 function pickLocaleFromReq(req) {
   // prefer explicit body.locale, then Accept-Language header
   const fromBody = req && req.body && req.body.locale;
@@ -50,10 +44,7 @@ function t(locale, enText, hiText) {
   return String(locale).startsWith('hi') ? (hiText || enText) : enText;
 }
 
-/**
- * Helper: fetch weather from our own weather route
- * Returns an object: { weatherInfo: <raw forecast/cur>, seatingPreference: 'indoor'|'outdoor' }
- */
+
 async function fetchWeatherForDate(date, lat, lon) {
   try {
     const url = `${BACKEND_ORIGIN}/api/weather`;
@@ -70,18 +61,7 @@ async function fetchWeatherForDate(date, lat, lon) {
   }
 }
 
-/**
- * --- Notification helpers (Twilio + Vonage/Nexmo + SMTP + SendGrid + Ethereal fallback)
- *
- * These functions are tolerant: if credentials missing they just resolve(false) and log.
- */
 
-/**
- * sendSms(to, text)
- * - tries Twilio if configured
- * - else tries Vonage (Nexmo) if configured
- * - else logs and returns false
- */
 async function sendSms(to, text) {
   try {
     // 1) Twilio if configured

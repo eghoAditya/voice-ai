@@ -1,15 +1,5 @@
-// frontend/src/AdminPanel.jsx
 import { useEffect, useState } from "react";
 
-/**
- * AdminPanel
- * - Fetches GET /api/bookings
- * - Allows delete (DELETE /api/bookings/:bookingId)
- * - Shows simple analytics: peak hours and popular cuisines
- * - Exports CSV of bookings
- *
- * Note: this panel is client-side only. In production you should protect it with proper auth.
- */
 
 export default function AdminPanel({ onClose }) {
   const [bookings, setBookings] = useState([]);

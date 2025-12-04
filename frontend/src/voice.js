@@ -1,9 +1,8 @@
-
 let running = false;
 let stopRequested = false;
-let ttsLang = 'en-IN'; // updated by startConversation
+let ttsLang = 'en-IN'; 
 
-// ---------- TTS utils ----------
+
 function chooseBestVoice(preferredLang) {
   const voices = window.speechSynthesis.getVoices() || [];
   if (!voices.length) return null;
@@ -60,7 +59,7 @@ export function speak(text) {
       try {
         const ut = new SpeechSynthesisUtterance(text);
 
-        // Set utterance language explicitly to the active TTS language
+        
         if (ttsLang) {
           try { ut.lang = ttsLang; } catch (e) { /* ignore */ }
         }
@@ -81,7 +80,7 @@ export function speak(text) {
   });
 }
 
-// ---------- Recognition helper ----------
+
 function listenOnce({ lang = "en-IN", timeoutMs = 14000 } = {}) {
   return new Promise((resolve) => {
     if (!("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) { resolve(""); return; }
@@ -123,7 +122,6 @@ async function speakThenListen(promptText, lang = 'en-IN') {
   return await listenOnce({ lang });
 }
 
-// ---------- Parsing helpers ----------
 const SMALL_NUM = {
   zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10,
   eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19,
@@ -134,7 +132,6 @@ function parseNumberText(text) {
   if (!text) return null;
   const orig = String(text).trim();
 
-  // Replace Devanagari digits
   const devanagariDigits = { '०':'0','१':'1','२':'2','३':'3','४':'4','५':'5','६':'6','७':'7','८':'8','९':'9' };
   let normalized = orig.replace(/[\u0966-\u096F]/g, (d) => devanagariDigits[d] || d);
 
@@ -196,7 +193,6 @@ function parseNumberText(text) {
   return null;
 }
 
-// Enhanced parseDateText (supports common English/Hindi forms)
 function parseDateText(text) {
   if (!text) return null;
   const raw = String(text).trim();
@@ -327,7 +323,7 @@ function genBookingId(){ const ts = Date.now(); const rand = Math.floor(Math.ran
 
 export function stopConversation() { stopRequested = true; running = false; try { window.speechSynthesis.cancel(); } catch(e) {} }
 
-// ---------- NLP call ----------
+// NLP calling
 async function callNLP(text, locale = 'en-IN') {
   try {
     const resp = await fetch('http://localhost:4000/api/nlp/interpret', {
@@ -350,7 +346,7 @@ async function callNLP(text, locale = 'en-IN') {
   }
 }
 
-// ---------- Weather helper ----------
+// Weather suggestion
 async function fetchWeatherSuggestion(dateYMD, lat='12.9716', lon='77.5946') {
   try {
     const url = `http://localhost:4000/api/weather?date=${encodeURIComponent(dateYMD)}&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`;
@@ -363,7 +359,7 @@ async function fetchWeatherSuggestion(dateYMD, lat='12.9716', lon='77.5946') {
   }
 }
 
-// ---------- Affirmative / Negative detection ----------
+// YES/NO detection
 function isAffirmative(text) {
   if (!text) return false;
   const t = String(text).toLowerCase().trim();
@@ -374,7 +370,7 @@ function isAffirmative(text) {
   return false;
 }
 
-// ---------- Slots API helper (used when conflict occurs) ----------
+
 async function fetchSlotsForDateAPI(date) {
   try {
     const r = await fetch(`http://localhost:4000/api/bookings/slots?date=${encodeURIComponent(date)}`);
@@ -389,11 +385,11 @@ async function fetchSlotsForDateAPI(date) {
 async function askUserToPickSlot(offeredSlots, userLocale) {
   if (!offeredSlots || offeredSlots.length === 0) return null;
 
-  // Build spoken list (human-friendly)
+
   const humanSlots = offeredSlots.map(s => {
     const [hh, mm] = s.split(':').map(Number);
     if ((userLocale || '').startsWith('hi')) {
-      // keep 24-hour in Hindi (recognizer will handle)
+    
       return s;
     } else {
       const h12 = (hh % 12) === 0 ? 12 : hh % 12;
@@ -406,12 +402,12 @@ async function askUserToPickSlot(offeredSlots, userLocale) {
     ? `मैं ${offeredSlots.join(', ')} में से उपलब्ध कर सकता हूँ। कौन सा समय चाहेंगे?`
     : `I can do ${humanSlots.join(', ').replace(/, ([^,]*)$/, ' or $1')}. Which one would you like?`;
 
-  // Ask
+
   await speak(speakText);
   const pickResp = await listenOnce({ lang: userLocale });
   if (!pickResp) return null;
 
-  // Try time parse
+
   const parsed = parseTimeText(pickResp);
   if (parsed) {
     const norm = parsed.slice(0,5);
@@ -435,7 +431,7 @@ async function askUserToPickSlot(offeredSlots, userLocale) {
   return null;
 }
 
-// ---------- Main conversation flow ----------
+// Main conversation flow
 export async function startConversation(onUpdate, options = {}) {
   const userLocale = (options && options.locale) ? options.locale : 'en-IN';
   ttsLang = userLocale;
@@ -494,13 +490,12 @@ export async function startConversation(onUpdate, options = {}) {
         onUpdate && onUpdate(em || "", "user");
         if (em) answers._collectedEmail = em.trim();
       } else {
-        // ambiguous — continue, UI might still have contact
+      
         onUpdate && onUpdate(userLocale.startsWith('hi') ? "ठीक है — आगे बढ़ रहे हैं। कृपया बाद में संपर्क दें।" : "Okay — continuing. You can provide contact later.", "agent");
         await speak(userLocale.startsWith('hi') ? "ठीक है — आगे बढ़ रहे हैं।" : "Okay — continuing.");
       }
     }
 
-    // iterate flow — each iteration is wrapped in a try/catch so one error won't abort the entire conversation
     for (let i = 0; i < flow.length; i++) {
       if (stopRequested) break;
       const q = flow[i];
@@ -509,7 +504,6 @@ export async function startConversation(onUpdate, options = {}) {
       if (answers[q.key] && answers[q.key].length > 0) continue;
 
       try {
-        // --- special-case seating suggestion for bookingTime (unchanged logic) ---
         if (q.key === 'bookingTime') {
           const rawDateText = answers.bookingDate || "";
           const parsedDate = parseDateText(rawDateText) || new Date();
@@ -524,16 +518,29 @@ export async function startConversation(onUpdate, options = {}) {
             const w = weatherResp.data;
             rec = (w.seatingRecommendation || w.seatingPreference || '').toLowerCase();
             const summary = w.weatherSummary || "";
+
             if (rec === 'outdoor') {
-              suggestionText = `The weather looks great on ${dateYMD}! Would you prefer outdoor seating?`;
+              // Good weather = outdoor suggestion
+              suggestionText = userLocale.startsWith('hi')
+                ? `${dateYMD} को मौसम बहुत अच्छा है। क्या आप बाहर बैठना पसंद करेंगे?`
+                : `The weather looks great on ${dateYMD}! Would you prefer outdoor seating?`;
             } else if (rec === 'indoor') {
-              suggestionText = `It might rain on ${dateYMD}. I'd recommend our cozy indoor area. Would you like that?`;
+              // Rainy/bad weather = indoor suggestion
+              suggestionText = userLocale.startsWith('hi')
+                ? `लगता है ${dateYMD} को बारिश हो सकती है। मैं आपको हमारी आरामदायक इनडोर सीटिंग की सलाह दूँगा। क्या आप अंदर बैठना पसंद करेंगे?`
+                : `It might rain on ${dateYMD}. I'd recommend our cozy indoor area. Would you like that?`;
             } else {
-              suggestionText = `I checked the weather for ${dateYMD}: ${summary || 'forecast not available'}. Would you prefer outdoor seating?`;
+              // Neutral/unknown forecast
+              suggestionText = userLocale.startsWith('hi')
+                ? `मैंने ${dateYMD} के लिए मौसम चेक किया: ${summary || 'पूर्वानुमान उपलब्ध नहीं है'}. क्या आप बाहर बैठना पसंद करेंगे?`
+                : `I checked the weather for ${dateYMD}: ${summary || 'forecast not available'}. Would you prefer outdoor seating?`;
               rec = 'outdoor';
             }
           } else {
-            suggestionText = `I couldn't fetch the forecast for ${dateYMD}. Would you prefer indoor seating by default?`;
+            // Weather API failed
+            suggestionText = userLocale.startsWith('hi')
+              ? `मैं ${dateYMD} के लिए मौसम का पूर्वानुमान नहीं ला पाया। क्या आप डिफ़ॉल्ट रूप से अंदर बैठना पसंद करेंगे?`
+              : `I couldn't fetch the forecast for ${dateYMD}. Would you prefer indoor seating by default?`;
             rec = 'indoor';
           }
 
@@ -571,7 +578,7 @@ export async function startConversation(onUpdate, options = {}) {
           }
         }
 
-        // --- ask the question and listen ---
+        // ask the question and listen 
         onUpdate && onUpdate(q.prompt, "agent");
         await speak(q.prompt);
         let transcript = await listenOnce({ lang: userLocale });
@@ -617,13 +624,10 @@ export async function startConversation(onUpdate, options = {}) {
         }
 
       } catch (iterationErr) {
-        // Log full stack for debugging but keep conversation alive.
         console.error("Conversation step error:", iterationErr);
-        // Notify the user and reprompt the same question
         const errMsg = userLocale.startsWith('hi') ? "मुझे थोड़ी समस्या हुई — कृपया फिर से कहें।" : "Sorry, I had a small problem — please say that again.";
         onUpdate && onUpdate(errMsg, "agent");
         try { await speak(errMsg); } catch(e) {}
-        // decrement i to repeat same question
         i = i - 1;
         continue;
       }
