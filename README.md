@@ -242,7 +242,7 @@ The admin dashboard includes:
 6. Slot conflict prevention  
 7. SMS + Email confirmation  
 8. Admin analytics dashboard  
-9. Final UI polish (Dark theme)  
+9. Final UI polish  
 
 ---
 
